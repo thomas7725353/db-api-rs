@@ -36,7 +36,7 @@
 - 支持OpenAPI，方便集成到其他软件系统
 
 ## 安装包下载
-[安装包下载](https://www.51dbapi.com/download/)
+[安装包下载](https://www.51dbapi.com/download)
 
 ## 安装文档
 [安装文档](https://www.51dbapi.com/install)

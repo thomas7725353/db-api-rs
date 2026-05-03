@@ -70,15 +70,7 @@ impl SqlTransformer {
             }
         }
 
-        match &mut *query.body {
-            SetExpr::Select(select) => Self::visit_select(select, params, index, dialect),
-            SetExpr::Query(subquery) => Self::visit_query(subquery, params, index, dialect),
-            SetExpr::SetOperation { left, op: _, right, set_quantifier: _ } => {
-                Self::visit_set_expr(left, params, index, dialect);
-                Self::visit_set_expr(right, params, index, dialect);
-            }
-            _ => {}
-        }
+        Self::visit_set_expr(&mut query.body, params, index, dialect);
 
         for expr in &mut query.order_by {
             Self::visit_expr(&mut expr.expr, params, index, dialect);
@@ -99,11 +91,26 @@ impl SqlTransformer {
                 Self::visit_set_expr(left, params, index, dialect);
                 Self::visit_set_expr(right, params, index, dialect);
             }
+            SetExpr::Values(values) => {
+                for row in &mut values.rows {
+                    for expr in row {
+                        Self::visit_expr(expr, params, index, dialect);
+                    }
+                }
+            }
             _ => {}
         }
     }
 
     fn visit_select(select: &mut Select, params: &mut Vec<String>, index: &mut usize, dialect: DialectType) {
+        if let Some(distinct) = &mut select.distinct {
+            if let sqlparser::ast::Distinct::On(exprs) = distinct {
+                for expr in exprs {
+                    Self::visit_expr(expr, params, index, dialect);
+                }
+            }
+        }
+
         for item in &mut select.projection {
             match item {
                 SelectItem::UnnamedExpr(expr) => Self::visit_expr(expr, params, index, dialect),
@@ -155,6 +162,21 @@ impl SqlTransformer {
             }
             TableFactor::TableFunction { expr, alias: _ } => {
                 Self::visit_expr(expr, params, index, dialect);
+            }
+            TableFactor::NestedJoin { table_with_joins, alias: _ } => {
+                Self::visit_table_factor(&mut table_with_joins.relation, params, index, dialect);
+                for join in &mut table_with_joins.joins {
+                    Self::visit_table_factor(&mut join.relation, params, index, dialect);
+                    match &mut join.join_operator {
+                        JoinOperator::Inner(JoinConstraint::On(expr)) |
+                        JoinOperator::LeftOuter(JoinConstraint::On(expr)) |
+                        JoinOperator::RightOuter(JoinConstraint::On(expr)) |
+                        JoinOperator::FullOuter(JoinConstraint::On(expr)) => {
+                            Self::visit_expr(expr, params, index, dialect);
+                        }
+                        _ => {}
+                    }
+                }
             }
             _ => {}
         }
@@ -254,6 +276,41 @@ impl SqlTransformer {
             Expr::Cast { expr, data_type: _, .. } => {
                 Self::visit_expr(expr, params, index, dialect);
             }
+            Expr::Extract { field: _, expr } => {
+                Self::visit_expr(expr, params, index, dialect);
+            }
+            Expr::Array(a) => {
+                for expr in &mut a.elem {
+                    Self::visit_expr(expr, params, index, dialect);
+                }
+            }
+            Expr::ListAgg(l) => {
+                Self::visit_expr(&mut l.expr, params, index, dialect);
+            }
+            Expr::ArrayAgg(a) => {
+                Self::visit_expr(&mut a.expr, params, index, dialect);
+            }
+            Expr::GroupingSets(groups) => {
+                for group in groups {
+                    for expr in group {
+                        Self::visit_expr(expr, params, index, dialect);
+                    }
+                }
+            }
+            Expr::Cube(groups) => {
+                for group in groups {
+                    for expr in group {
+                        Self::visit_expr(expr, params, index, dialect);
+                    }
+                }
+            }
+            Expr::Rollup(groups) => {
+                for group in groups {
+                    for expr in group {
+                        Self::visit_expr(expr, params, index, dialect);
+                    }
+                }
+            }
             Expr::TypedString { data_type: _, value: _ } => {}
             Expr::CompoundIdentifier(_) => {}
             Expr::Identifier(_) => {}
@@ -311,5 +368,14 @@ mod tests {
         let sql = "DELETE FROM users WHERE id = $id";
         let result = SqlTransformer::transform(sql, DialectType::MySql);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_values_clause_transformation() {
+        let sql = "SELECT * FROM (VALUES (1, $id)) AS t(a, b)";
+        let (transformed, params) = SqlTransformer::transform(sql, DialectType::MySql).unwrap();
+        // If this fails to find $id, params will be empty and transformed will still have $id
+        assert_eq!(params, vec!["id".to_string()]);
+        assert!(transformed.contains("?"));
     }
 }

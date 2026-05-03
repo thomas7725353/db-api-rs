@@ -364,7 +364,6 @@ dependencies = [
  "rbdc-pg",
  "rbdc-sqlite",
  "rbs",
- "regex",
  "serde",
  "serde_json",
  "sqlparser",

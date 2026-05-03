@@ -142,6 +142,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.headers().get("content-type").unwrap(), "application/json");
     }
 
     #[tokio::test]
@@ -183,6 +184,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("content-type").unwrap(), "application/json");
         let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
         let json: JsonValue = serde_json::from_slice(&body).unwrap();
         assert_eq!(json[0]["id"], "123");

@@ -38,6 +38,7 @@ mod tests {
         let datasources: Vec<DataSource> = DataSource::select_all(&rb).await.unwrap();
         assert!(!datasources.is_empty());
         assert_eq!(datasources[0].name.as_ref().unwrap(), "test_ds");
+        assert_eq!(datasources[0].db_type.as_ref().unwrap(), "mysql");
     }
 
     #[tokio::test]

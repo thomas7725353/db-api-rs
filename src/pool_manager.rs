@@ -36,14 +36,14 @@ impl PoolManager {
     async fn create_rbatis(&self, ds: &DataSource) -> Result<RBatis> {
         let rb = RBatis::new();
         let url = ds.url.as_deref().unwrap_or("");
-        let db_type = ds.db_type.as_deref().unwrap_or("");
+        let db_type = ds.db_type.as_deref().unwrap_or("").to_lowercase();
 
-        match db_type {
+        match db_type.as_str() {
             "mysql" => {
                 let url = url.replace("jdbc:mysql://", "mysql://");
                 rb.init(MysqlDriver {}, &url)?;
             }
-            "postgres" | "postgreSql" => {
+            "postgres" | "postgresql" | "postgresql" => {
                 let url = url.replace("jdbc:postgresql://", "postgres://");
                 rb.init(PgDriver {}, &url)?;
             }

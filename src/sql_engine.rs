@@ -81,6 +81,11 @@ impl SqlTransformer {
         if let Some(offset) = &mut query.offset {
             Self::visit_expr(&mut offset.value, params, index, dialect);
         }
+        if let Some(fetch) = &mut query.fetch {
+            if let Some(quantity) = &mut fetch.quantity {
+                Self::visit_expr(quantity, params, index, dialect);
+            }
+        }
     }
 
     fn visit_set_expr(set_expr: &mut SetExpr, params: &mut Vec<String>, index: &mut usize, dialect: DialectType) {
@@ -162,6 +167,11 @@ impl SqlTransformer {
             }
             TableFactor::TableFunction { expr, alias: _ } => {
                 Self::visit_expr(expr, params, index, dialect);
+            }
+            TableFactor::UNNEST { array_exprs, .. } => {
+                for expr in array_exprs {
+                    Self::visit_expr(expr, params, index, dialect);
+                }
             }
             TableFactor::NestedJoin { table_with_joins, alias: _ } => {
                 Self::visit_table_factor(&mut table_with_joins.relation, params, index, dialect);
@@ -272,12 +282,59 @@ impl SqlTransformer {
                         }
                     }
                 }
+                if let Some(over) = &mut f.over {
+                    match over {
+                        sqlparser::ast::WindowType::WindowSpec(spec) => {
+                            for expr in &mut spec.partition_by {
+                                Self::visit_expr(expr, params, index, dialect);
+                            }
+                            for order_by in &mut spec.order_by {
+                                Self::visit_expr(&mut order_by.expr, params, index, dialect);
+                            }
+                        }
+                        sqlparser::ast::WindowType::NamedWindow(_) => {}
+                    }
+                }
+                if let Some(filter) = &mut f.filter {
+                    Self::visit_expr(filter, params, index, dialect);
+                }
             }
             Expr::Cast { expr, data_type: _, .. } => {
                 Self::visit_expr(expr, params, index, dialect);
             }
             Expr::Extract { field: _, expr } => {
                 Self::visit_expr(expr, params, index, dialect);
+            }
+            Expr::IsNull(expr) | Expr::IsNotNull(expr) | Expr::IsTrue(expr) | Expr::IsFalse(expr) | 
+            Expr::IsUnknown(expr) | Expr::IsNotTrue(expr) | Expr::IsNotFalse(expr) | Expr::IsNotUnknown(expr) => {
+                Self::visit_expr(expr, params, index, dialect);
+            }
+            Expr::Like { expr, pattern, .. } | Expr::ILike { expr, pattern, .. } | Expr::SimilarTo { expr, pattern, .. } => {
+                Self::visit_expr(expr, params, index, dialect);
+                Self::visit_expr(pattern, params, index, dialect);
+            }
+            Expr::Trim { expr, trim_what, .. } => {
+                Self::visit_expr(expr, params, index, dialect);
+                if let Some(tw) = trim_what {
+                    Self::visit_expr(tw, params, index, dialect);
+                }
+            }
+            Expr::Substring { expr, substring_from, substring_for, .. } => {
+                Self::visit_expr(expr, params, index, dialect);
+                if let Some(from) = substring_from {
+                    Self::visit_expr(from, params, index, dialect);
+                }
+                if let Some(to) = substring_for {
+                    Self::visit_expr(to, params, index, dialect);
+                }
+            }
+            Expr::Overlay { expr, overlay_what, overlay_from, overlay_for } => {
+                Self::visit_expr(expr, params, index, dialect);
+                Self::visit_expr(overlay_what, params, index, dialect);
+                Self::visit_expr(overlay_from, params, index, dialect);
+                if let Some(of) = overlay_for {
+                    Self::visit_expr(of, params, index, dialect);
+                }
             }
             Expr::Array(a) => {
                 for expr in &mut a.elem {
@@ -377,5 +434,25 @@ mod tests {
         // If this fails to find $id, params will be empty and transformed will still have $id
         assert_eq!(params, vec!["id".to_string()]);
         assert!(transformed.contains("?"));
+    }
+
+    #[test]
+    fn test_complex_expressions() {
+        let cases = vec![
+            ("SELECT * FROM x WHERE name LIKE $name", vec!["name"]),
+            ("SELECT * FROM x WHERE id IN ($id1, $id2)", vec!["id1", "id2"]),
+            ("SELECT CASE WHEN id = $id THEN $val1 ELSE $val2 END FROM x", vec!["id", "val1", "val2"]),
+            ("SELECT COALESCE(name, $default) FROM x", vec!["default"]),
+            ("SELECT CAST(id AS VARCHAR) = $id_str FROM x", vec!["id_str"]),
+            ("SELECT * FROM x WHERE id BETWEEN $low AND $high", vec!["low", "high"]),
+            ("SELECT * FROM x WHERE id IS NULL OR id = $id", vec!["id"]),
+            ("SELECT EXTRACT(YEAR FROM date_col) = $year FROM x", vec!["year"]),
+        ];
+
+        for (sql, expected_params) in cases {
+            let (_transformed, params) = SqlTransformer::transform(sql, DialectType::MySql)
+                .expect(&format!("Failed to transform: {}", sql));
+            assert_eq!(params, expected_params, "Failed for SQL: {}", sql);
+        }
     }
 }

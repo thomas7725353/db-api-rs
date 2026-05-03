@@ -13,7 +13,7 @@ use moka::future::Cache;
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    let metadata_db = repository::init_repository("sqlite://data.db").await?;
+    let metadata_db = repository::init_repository("sqlite://../data.db").await?;
     let pool_manager = Arc::new(PoolManager::new());
     let config_cache = Cache::new(1000);
 

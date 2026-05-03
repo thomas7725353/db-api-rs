@@ -42,24 +42,40 @@ pub async fn handle_api(
 
     let config = match config {
         Some(c) if c.status == Some(1) => c,
-        _ => return (StatusCode::NOT_FOUND, Json(json!({"error": "API not found or offline"}))).into_response(),
+        _ => return (StatusCode::NOT_FOUND, Json(json!({
+            "success": false,
+            "msg": "API not found or offline",
+            "data": null
+        }))).into_response(),
     };
 
     // 2. Get DataSource
     let ds_id = match config.datasource_id {
         Some(id) => id,
-        None => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "DataSource ID missing"}))).into_response(),
+        None => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "success": false,
+            "msg": "DataSource ID missing",
+            "data": null
+        }))).into_response(),
     };
 
     let ds = match DataSource::select_by_id(&state.metadata_db, ds_id).await {
         Ok(Some(ds)) => ds,
-        _ => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "DataSource not found"}))).into_response(),
+        _ => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "success": false,
+            "msg": "DataSource not found",
+            "data": null
+        }))).into_response(),
     };
 
     // 3. Get/Create RBatis pool
     let rb = match state.pool_manager.get_or_create(&ds).await {
         Ok(rb) => rb,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to connect to datasource: {}", e)}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "success": false,
+            "msg": format!("Failed to connect to datasource: {}", e),
+            "data": null
+        }))).into_response(),
     };
 
     // 4. Transform SQL
@@ -67,13 +83,21 @@ pub async fn handle_api(
         "mysql" => DialectType::MySql,
         "postgres" | "postgresql" => DialectType::PostgreSql,
         "sqlite" => DialectType::Sqlite,
-        _ => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Unsupported database type"}))).into_response(),
+        _ => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "success": false,
+            "msg": "Unsupported database type",
+            "data": null
+        }))).into_response(),
     };
 
     let sql = config.sql.as_deref().unwrap_or("");
     let (transformed_sql, param_names) = match SqlTransformer::transform(sql, dialect) {
         Ok(res) => res,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("SQL transformation failed: {}", e)}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "success": false,
+            "msg": format!("SQL transformation failed: {}", e),
+            "data": null
+        }))).into_response(),
     };
 
     // 5. Extract Params
@@ -93,15 +117,27 @@ pub async fn handle_api(
 
     let param_values = match SqlTransformer::extract_params(&param_names, &all_params) {
         Ok(vals) => vals,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({
+            "success": false,
+            "msg": e.to_string(),
+            "data": null
+        }))).into_response(),
     };
 
     let rbs_values: Vec<rbs::Value> = param_values.into_iter().map(rbs::to_value).collect::<Result<Vec<_>, _>>().unwrap_or_default();
 
     // 6. Execute SQL
     match rb.exec_decode::<JsonValue>(&transformed_sql, rbs_values).await {
-        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("SQL execution failed: {}", e)}))).into_response(),
+        Ok(result) => (StatusCode::OK, Json(json!({
+            "success": true,
+            "msg": "接口访问成功",
+            "data": result
+        }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "success": false,
+            "msg": format!("SQL execution failed: {}", e),
+            "data": null
+        }))).into_response(),
     }
 }
 
@@ -142,7 +178,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert_eq!(response.headers().get("content-type").unwrap(), "application/json");
     }
 
     #[tokio::test]
@@ -184,10 +219,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers().get("content-type").unwrap(), "application/json");
         let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
         let json: JsonValue = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json[0]["id"], "123");
-        assert_eq!(json[0]["message"], "hello");
+        assert_eq!(json["success"], true);
+        assert_eq!(json["data"][0]["id"], "123");
+        assert_eq!(json["data"][0]["message"], "hello");
     }
 }

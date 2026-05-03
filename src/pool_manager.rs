@@ -35,8 +35,18 @@ impl PoolManager {
 
     async fn create_rbatis(&self, ds: &DataSource) -> Result<RBatis> {
         let rb = RBatis::new();
-        let url = ds.url.as_deref().unwrap_or("");
+        let mut url = ds.url.as_deref().unwrap_or("").to_string();
         let db_type = ds.db_type.as_deref().unwrap_or("").to_lowercase();
+
+        // Handle credentials if they are provided separately and NOT already in the URL
+        if let (Some(user), Some(pass)) = (&ds.username, &ds.password) {
+            if !url.contains('@') && (db_type == "mysql" || db_type == "postgres" || db_type == "postgresql") {
+                if let Some(pos) = url.find("//") {
+                    let (before, after) = url.split_at(pos + 2);
+                    url = format!("{}{}:{}@{}", before, user, pass, after);
+                }
+            }
+        }
 
         match db_type.as_str() {
             "mysql" => {
@@ -55,6 +65,7 @@ impl PoolManager {
         }
         Ok(rb)
     }
+
 }
 
 #[cfg(test)]

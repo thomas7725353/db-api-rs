@@ -1,0 +1,21 @@
+[package]
+name = "db-api-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }
+rbatis = { version = "4.0" }
+rbdc-sqlite = "4.0"
+rbdc-mysql = "4.0"
+rbdc-pg = "4.0"
+sqlparser = "0.43"
+moka = { version = "0.12", features = ["future"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dashmap = "5.5"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.10"

@@ -3,3 +3,7 @@ target/
 *.iml
 logs/
 src/main/resources/static
+
+# Added by cargo
+
+/target

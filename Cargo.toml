@@ -8,6 +8,7 @@ tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
 rbatis = { version = "4.0" }
+rbs = "4.0"
 rbdc-sqlite = "4.0"
 rbdc-mysql = "4.0"
 rbdc-pg = "4.0"

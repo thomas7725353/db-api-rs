@@ -1,3 +1,6 @@
+mod model;
+mod repository;
+
 use axum::{routing::get, Router};
 
 #[tokio::main]

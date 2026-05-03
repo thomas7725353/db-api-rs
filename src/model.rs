@@ -19,6 +19,11 @@ impl DataSource {
     pub async fn select_all(rb: &rbatis::RBatis) -> rbatis::Result<Vec<DataSource>> {
         rb.exec_decode("select * from datasource", vec![]).await
     }
+
+    pub async fn select_by_id(rb: &rbatis::RBatis, id: i32) -> rbatis::Result<Option<DataSource>> {
+        let vec: Vec<DataSource> = rb.exec_decode("select * from datasource where id = ?", vec![rbs::value!(id)]).await?;
+        Ok(vec.into_iter().next())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -38,5 +43,10 @@ crud!(ApiConfig {});
 impl ApiConfig {
     pub async fn select_all(rb: &rbatis::RBatis) -> rbatis::Result<Vec<ApiConfig>> {
         rb.exec_decode("select * from api_config", vec![]).await
+    }
+
+    pub async fn select_by_path(rb: &rbatis::RBatis, path: &str) -> rbatis::Result<Option<ApiConfig>> {
+        let vec: Vec<ApiConfig> = rb.exec_decode("select * from api_config where path = ?", vec![rbs::value!(path)]).await?;
+        Ok(vec.into_iter().next())
     }
 }

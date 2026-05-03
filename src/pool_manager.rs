@@ -43,7 +43,7 @@ impl PoolManager {
                 let url = url.replace("jdbc:mysql://", "mysql://");
                 rb.init(MysqlDriver {}, &url)?;
             }
-            "postgres" | "postgresql" | "postgresql" => {
+            "postgres" | "postgresql" => {
                 let url = url.replace("jdbc:postgresql://", "postgres://");
                 rb.init(PgDriver {}, &url)?;
             }

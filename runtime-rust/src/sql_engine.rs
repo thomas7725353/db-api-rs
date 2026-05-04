@@ -1,8 +1,11 @@
-use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect, SQLiteDialect, Dialect};
-use sqlparser::parser::Parser;
-use sqlparser::ast::{Statement, Query, SetExpr, Select, Expr, Value, JoinOperator, JoinConstraint, TableFactor, FunctionArg, FunctionArgExpr, SelectItem};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde_json::Value as JsonValue;
+use sqlparser::ast::{
+    Expr, FunctionArg, FunctionArgExpr, JoinConstraint, JoinOperator, Query, Select, SelectItem,
+    SetExpr, Statement, TableFactor, Value,
+};
+use sqlparser::dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect};
+use sqlparser::parser::Parser;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DialectType {
@@ -31,7 +34,7 @@ impl SqlTransformer {
 
         // Security Guard: Only SELECT allowed
         match statement {
-            Statement::Query(_) => {},
+            Statement::Query(_) => {}
             _ => return Err(anyhow!("Only SELECT statements are allowed")),
         }
 
@@ -57,13 +60,23 @@ impl SqlTransformer {
         Ok(values)
     }
 
-    fn visit_statement(stmt: &mut Statement, params: &mut Vec<String>, index: &mut usize, dialect: DialectType) {
+    fn visit_statement(
+        stmt: &mut Statement,
+        params: &mut Vec<String>,
+        index: &mut usize,
+        dialect: DialectType,
+    ) {
         if let Statement::Query(query) = stmt {
             Self::visit_query(query, params, index, dialect);
         }
     }
 
-    fn visit_query(query: &mut Query, params: &mut Vec<String>, index: &mut usize, dialect: DialectType) {
+    fn visit_query(
+        query: &mut Query,
+        params: &mut Vec<String>,
+        index: &mut usize,
+        dialect: DialectType,
+    ) {
         if let Some(with) = &mut query.with {
             for cte in &mut with.cte_tables {
                 Self::visit_query(&mut cte.query, params, index, dialect);
@@ -81,18 +94,28 @@ impl SqlTransformer {
         if let Some(offset) = &mut query.offset {
             Self::visit_expr(&mut offset.value, params, index, dialect);
         }
-        if let Some(fetch) = &mut query.fetch {
-            if let Some(quantity) = &mut fetch.quantity {
-                Self::visit_expr(quantity, params, index, dialect);
-            }
+        if let Some(fetch) = &mut query.fetch
+            && let Some(quantity) = &mut fetch.quantity
+        {
+            Self::visit_expr(quantity, params, index, dialect);
         }
     }
 
-    fn visit_set_expr(set_expr: &mut SetExpr, params: &mut Vec<String>, index: &mut usize, dialect: DialectType) {
+    fn visit_set_expr(
+        set_expr: &mut SetExpr,
+        params: &mut Vec<String>,
+        index: &mut usize,
+        dialect: DialectType,
+    ) {
         match set_expr {
             SetExpr::Select(select) => Self::visit_select(select, params, index, dialect),
             SetExpr::Query(query) => Self::visit_query(query, params, index, dialect),
-            SetExpr::SetOperation { left, op: _, right, set_quantifier: _ } => {
+            SetExpr::SetOperation {
+                left,
+                op: _,
+                right,
+                set_quantifier: _,
+            } => {
                 Self::visit_set_expr(left, params, index, dialect);
                 Self::visit_set_expr(right, params, index, dialect);
             }
@@ -107,19 +130,24 @@ impl SqlTransformer {
         }
     }
 
-    fn visit_select(select: &mut Select, params: &mut Vec<String>, index: &mut usize, dialect: DialectType) {
-        if let Some(distinct) = &mut select.distinct {
-            if let sqlparser::ast::Distinct::On(exprs) = distinct {
-                for expr in exprs {
-                    Self::visit_expr(expr, params, index, dialect);
-                }
+    fn visit_select(
+        select: &mut Select,
+        params: &mut Vec<String>,
+        index: &mut usize,
+        dialect: DialectType,
+    ) {
+        if let Some(sqlparser::ast::Distinct::On(exprs)) = &mut select.distinct {
+            for expr in exprs {
+                Self::visit_expr(expr, params, index, dialect);
             }
         }
 
         for item in &mut select.projection {
             match item {
                 SelectItem::UnnamedExpr(expr) => Self::visit_expr(expr, params, index, dialect),
-                SelectItem::ExprWithAlias { expr, alias: _ } => Self::visit_expr(expr, params, index, dialect),
+                SelectItem::ExprWithAlias { expr, alias: _ } => {
+                    Self::visit_expr(expr, params, index, dialect)
+                }
                 _ => {}
             }
         }
@@ -129,10 +157,10 @@ impl SqlTransformer {
             for join in &mut table.joins {
                 Self::visit_table_factor(&mut join.relation, params, index, dialect);
                 match &mut join.join_operator {
-                    JoinOperator::Inner(constraint) |
-                    JoinOperator::LeftOuter(constraint) |
-                    JoinOperator::RightOuter(constraint) |
-                    JoinOperator::FullOuter(constraint) => {
+                    JoinOperator::Inner(constraint)
+                    | JoinOperator::LeftOuter(constraint)
+                    | JoinOperator::RightOuter(constraint)
+                    | JoinOperator::FullOuter(constraint) => {
                         if let JoinConstraint::On(expr) = constraint {
                             Self::visit_expr(expr, params, index, dialect);
                         }
@@ -146,13 +174,10 @@ impl SqlTransformer {
             Self::visit_expr(selection, params, index, dialect);
         }
 
-        match &mut select.group_by {
-            sqlparser::ast::GroupByExpr::Expressions(exprs) => {
-                for expr in exprs {
-                    Self::visit_expr(expr, params, index, dialect);
-                }
+        if let sqlparser::ast::GroupByExpr::Expressions(exprs) = &mut select.group_by {
+            for expr in exprs {
+                Self::visit_expr(expr, params, index, dialect);
             }
-            _ => {}
         }
 
         if let Some(having) = &mut select.having {
@@ -160,9 +185,18 @@ impl SqlTransformer {
         }
     }
 
-    fn visit_table_factor(tf: &mut TableFactor, params: &mut Vec<String>, index: &mut usize, dialect: DialectType) {
+    fn visit_table_factor(
+        tf: &mut TableFactor,
+        params: &mut Vec<String>,
+        index: &mut usize,
+        dialect: DialectType,
+    ) {
         match tf {
-            TableFactor::Derived { lateral: _, subquery, alias: _ } => {
+            TableFactor::Derived {
+                lateral: _,
+                subquery,
+                alias: _,
+            } => {
                 Self::visit_query(subquery, params, index, dialect);
             }
             TableFactor::TableFunction { expr, alias: _ } => {
@@ -173,15 +207,18 @@ impl SqlTransformer {
                     Self::visit_expr(expr, params, index, dialect);
                 }
             }
-            TableFactor::NestedJoin { table_with_joins, alias: _ } => {
+            TableFactor::NestedJoin {
+                table_with_joins,
+                alias: _,
+            } => {
                 Self::visit_table_factor(&mut table_with_joins.relation, params, index, dialect);
                 for join in &mut table_with_joins.joins {
                     Self::visit_table_factor(&mut join.relation, params, index, dialect);
                     match &mut join.join_operator {
-                        JoinOperator::Inner(JoinConstraint::On(expr)) |
-                        JoinOperator::LeftOuter(JoinConstraint::On(expr)) |
-                        JoinOperator::RightOuter(JoinConstraint::On(expr)) |
-                        JoinOperator::FullOuter(JoinConstraint::On(expr)) => {
+                        JoinOperator::Inner(JoinConstraint::On(expr))
+                        | JoinOperator::LeftOuter(JoinConstraint::On(expr))
+                        | JoinOperator::RightOuter(JoinConstraint::On(expr))
+                        | JoinOperator::FullOuter(JoinConstraint::On(expr)) => {
                             Self::visit_expr(expr, params, index, dialect);
                         }
                         _ => {}
@@ -192,7 +229,12 @@ impl SqlTransformer {
         }
     }
 
-    fn visit_expr(expr: &mut Expr, params: &mut Vec<String>, index: &mut usize, dialect: DialectType) {
+    fn visit_expr(
+        expr: &mut Expr,
+        params: &mut Vec<String>,
+        index: &mut usize,
+        dialect: DialectType,
+    ) {
         match expr {
             Expr::Value(Value::Placeholder(name)) if name.starts_with('$') => {
                 let param_name = name[1..].to_string();
@@ -230,22 +272,40 @@ impl SqlTransformer {
             Expr::Nested(e) => {
                 Self::visit_expr(e, params, index, dialect);
             }
-            Expr::InList { expr, list, negated: _ } => {
+            Expr::InList {
+                expr,
+                list,
+                negated: _,
+            } => {
                 Self::visit_expr(expr, params, index, dialect);
                 for item in list {
                     Self::visit_expr(item, params, index, dialect);
                 }
             }
-            Expr::InSubquery { expr, subquery, negated: _ } => {
+            Expr::InSubquery {
+                expr,
+                subquery,
+                negated: _,
+            } => {
                 Self::visit_expr(expr, params, index, dialect);
                 Self::visit_query(subquery, params, index, dialect);
             }
-            Expr::Between { expr, negated: _, low, high } => {
+            Expr::Between {
+                expr,
+                negated: _,
+                low,
+                high,
+            } => {
                 Self::visit_expr(expr, params, index, dialect);
                 Self::visit_expr(low, params, index, dialect);
                 Self::visit_expr(high, params, index, dialect);
             }
-            Expr::Case { operand, conditions, results, else_result } => {
+            Expr::Case {
+                operand,
+                conditions,
+                results,
+                else_result,
+            } => {
                 if let Some(op) = operand {
                     Self::visit_expr(op, params, index, dialect);
                 }
@@ -259,7 +319,10 @@ impl SqlTransformer {
                     Self::visit_expr(el, params, index, dialect);
                 }
             }
-            Expr::Exists { subquery, negated: _ } => {
+            Expr::Exists {
+                subquery,
+                negated: _,
+            } => {
                 Self::visit_query(subquery, params, index, dialect);
             }
             Expr::Subquery(q) => {
@@ -268,18 +331,14 @@ impl SqlTransformer {
             Expr::Function(f) => {
                 for arg in &mut f.args {
                     match arg {
-                        FunctionArg::Unnamed(arg_expr) => {
-                            match arg_expr {
-                                FunctionArgExpr::Expr(e) => Self::visit_expr(e, params, index, dialect),
-                                _ => {}
-                            }
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => {
+                            Self::visit_expr(e, params, index, dialect)
                         }
-                        FunctionArg::Named { name: _, arg } => {
-                            match arg {
-                                FunctionArgExpr::Expr(e) => Self::visit_expr(e, params, index, dialect),
-                                _ => {}
-                            }
-                        }
+                        FunctionArg::Named {
+                            name: _,
+                            arg: FunctionArgExpr::Expr(e),
+                        } => Self::visit_expr(e, params, index, dialect),
+                        _ => {}
                     }
                 }
                 if let Some(over) = &mut f.over {
@@ -299,27 +358,44 @@ impl SqlTransformer {
                     Self::visit_expr(filter, params, index, dialect);
                 }
             }
-            Expr::Cast { expr, data_type: _, .. } => {
+            Expr::Cast {
+                expr, data_type: _, ..
+            } => {
                 Self::visit_expr(expr, params, index, dialect);
             }
             Expr::Extract { field: _, expr } => {
                 Self::visit_expr(expr, params, index, dialect);
             }
-            Expr::IsNull(expr) | Expr::IsNotNull(expr) | Expr::IsTrue(expr) | Expr::IsFalse(expr) | 
-            Expr::IsUnknown(expr) | Expr::IsNotTrue(expr) | Expr::IsNotFalse(expr) | Expr::IsNotUnknown(expr) => {
+            Expr::IsNull(expr)
+            | Expr::IsNotNull(expr)
+            | Expr::IsTrue(expr)
+            | Expr::IsFalse(expr)
+            | Expr::IsUnknown(expr)
+            | Expr::IsNotTrue(expr)
+            | Expr::IsNotFalse(expr)
+            | Expr::IsNotUnknown(expr) => {
                 Self::visit_expr(expr, params, index, dialect);
             }
-            Expr::Like { expr, pattern, .. } | Expr::ILike { expr, pattern, .. } | Expr::SimilarTo { expr, pattern, .. } => {
+            Expr::Like { expr, pattern, .. }
+            | Expr::ILike { expr, pattern, .. }
+            | Expr::SimilarTo { expr, pattern, .. } => {
                 Self::visit_expr(expr, params, index, dialect);
                 Self::visit_expr(pattern, params, index, dialect);
             }
-            Expr::Trim { expr, trim_what, .. } => {
+            Expr::Trim {
+                expr, trim_what, ..
+            } => {
                 Self::visit_expr(expr, params, index, dialect);
                 if let Some(tw) = trim_what {
                     Self::visit_expr(tw, params, index, dialect);
                 }
             }
-            Expr::Substring { expr, substring_from, substring_for, .. } => {
+            Expr::Substring {
+                expr,
+                substring_from,
+                substring_for,
+                ..
+            } => {
                 Self::visit_expr(expr, params, index, dialect);
                 if let Some(from) = substring_from {
                     Self::visit_expr(from, params, index, dialect);
@@ -328,7 +404,12 @@ impl SqlTransformer {
                     Self::visit_expr(to, params, index, dialect);
                 }
             }
-            Expr::Overlay { expr, overlay_what, overlay_from, overlay_for } => {
+            Expr::Overlay {
+                expr,
+                overlay_what,
+                overlay_from,
+                overlay_for,
+            } => {
                 Self::visit_expr(expr, params, index, dialect);
                 Self::visit_expr(overlay_what, params, index, dialect);
                 Self::visit_expr(overlay_from, params, index, dialect);
@@ -368,7 +449,10 @@ impl SqlTransformer {
                     }
                 }
             }
-            Expr::TypedString { data_type: _, value: _ } => {}
+            Expr::TypedString {
+                data_type: _,
+                value: _,
+            } => {}
             Expr::CompoundIdentifier(_) => {}
             Expr::Identifier(_) => {}
             _ => {}
@@ -384,15 +468,24 @@ mod tests {
     fn test_mysql_transformation() {
         let sql = "SELECT * FROM users WHERE id = $id AND name = $name";
         let (transformed, params) = SqlTransformer::transform(sql, DialectType::MySql).unwrap();
-        assert!(transformed.to_uppercase().contains("WHERE ID = ? AND NAME = ?"));
+        assert!(
+            transformed
+                .to_uppercase()
+                .contains("WHERE ID = ? AND NAME = ?")
+        );
         assert_eq!(params, vec!["id".to_string(), "name".to_string()]);
     }
 
     #[test]
     fn test_postgresql_transformation() {
         let sql = "SELECT * FROM users WHERE id = $id AND name = $name";
-        let (transformed, params) = SqlTransformer::transform(sql, DialectType::PostgreSql).unwrap();
-        assert!(transformed.to_uppercase().contains("WHERE ID = $1 AND NAME = $2"));
+        let (transformed, params) =
+            SqlTransformer::transform(sql, DialectType::PostgreSql).unwrap();
+        assert!(
+            transformed
+                .to_uppercase()
+                .contains("WHERE ID = $1 AND NAME = $2")
+        );
         assert_eq!(params, vec!["id".to_string(), "name".to_string()]);
     }
 
@@ -440,18 +533,33 @@ mod tests {
     fn test_complex_expressions() {
         let cases = vec![
             ("SELECT * FROM x WHERE name LIKE $name", vec!["name"]),
-            ("SELECT * FROM x WHERE id IN ($id1, $id2)", vec!["id1", "id2"]),
-            ("SELECT CASE WHEN id = $id THEN $val1 ELSE $val2 END FROM x", vec!["id", "val1", "val2"]),
+            (
+                "SELECT * FROM x WHERE id IN ($id1, $id2)",
+                vec!["id1", "id2"],
+            ),
+            (
+                "SELECT CASE WHEN id = $id THEN $val1 ELSE $val2 END FROM x",
+                vec!["id", "val1", "val2"],
+            ),
             ("SELECT COALESCE(name, $default) FROM x", vec!["default"]),
-            ("SELECT CAST(id AS VARCHAR) = $id_str FROM x", vec!["id_str"]),
-            ("SELECT * FROM x WHERE id BETWEEN $low AND $high", vec!["low", "high"]),
+            (
+                "SELECT CAST(id AS VARCHAR) = $id_str FROM x",
+                vec!["id_str"],
+            ),
+            (
+                "SELECT * FROM x WHERE id BETWEEN $low AND $high",
+                vec!["low", "high"],
+            ),
             ("SELECT * FROM x WHERE id IS NULL OR id = $id", vec!["id"]),
-            ("SELECT EXTRACT(YEAR FROM date_col) = $year FROM x", vec!["year"]),
+            (
+                "SELECT EXTRACT(YEAR FROM date_col) = $year FROM x",
+                vec!["year"],
+            ),
         ];
 
         for (sql, expected_params) in cases {
             let (_transformed, params) = SqlTransformer::transform(sql, DialectType::MySql)
-                .expect(&format!("Failed to transform: {}", sql));
+                .unwrap_or_else(|_| panic!("Failed to transform: {}", sql));
             assert_eq!(params, expected_params, "Failed for SQL: {}", sql);
         }
     }

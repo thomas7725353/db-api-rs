@@ -10,7 +10,7 @@ pub async fn init_repository(url: &str) -> anyhow::Result<RBatis> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DataSource, ApiConfig};
+    use crate::model::{ApiConfig, DataSource};
 
     async fn setup_test_db() -> RBatis {
         let rb = init_repository("sqlite::memory:").await.unwrap();
@@ -23,7 +23,7 @@ mod tests {
     #[tokio::test]
     async fn test_load_datasources() {
         let rb = setup_test_db().await;
-        
+
         let ds = DataSource {
             id: Some(1),
             name: Some("test_ds".to_string()),
@@ -44,7 +44,7 @@ mod tests {
     #[tokio::test]
     async fn test_load_api_configs() {
         let rb = setup_test_db().await;
-        
+
         let config = ApiConfig {
             id: Some(1),
             name: Some("test_api".to_string()),
@@ -55,7 +55,21 @@ mod tests {
             params: None,
             status: Some(1),
         };
-        ApiConfig::insert(&rb, &config).await.unwrap();
+        rb.exec(
+            "INSERT INTO api_config (id, path, name, note, sql, params, status, datasource_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            vec![
+                rbs::value!(config.id),
+                rbs::value!(config.path),
+                rbs::value!(config.name),
+                rbs::Value::Null,
+                rbs::value!(config.sql),
+                rbs::value!(config.params),
+                rbs::value!(config.status),
+                rbs::value!(config.datasource_id),
+            ],
+        )
+        .await
+        .unwrap();
 
         let configs: Vec<ApiConfig> = ApiConfig::select_all(&rb).await.unwrap();
         assert!(!configs.is_empty());

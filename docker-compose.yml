@@ -1,0 +1,21 @@
+services:
+  db-api-rs:
+    build:
+      context: .
+      dockerfile: runtime-rust/Dockerfile
+    environment:
+      RUST_LOG: info
+      DB_API_METADATA_URL: sqlite:///data/data.db
+    ports:
+      - "8520:8520"
+    volumes:
+      - ./data.db:/data/data.db
+
+  db-api-web:
+    build:
+      context: .
+      dockerfile: src/main/webapp/Dockerfile
+    depends_on:
+      - db-api-rs
+    ports:
+      - "8521:8521"

@@ -163,11 +163,11 @@ Update the Rust runtime dependency baseline:
 - `edition = "2024"`
 - `axum = "0.8.9"`
 - `tower-http = "0.6.8"`
-- `rbatis = "4.9.3"`
+- `rbatis = "4.9.2"`
 - `rbs = "4.8.4"`
-- `rbdc-sqlite = "4.9.5"`
-- `rbdc-mysql = "4.9.5"`
-- `rbdc-pg = "4.9.5"`
+- `rbdc-sqlite = "4.9.2"`
+- `rbdc-mysql = "4.9.2"`
+- `rbdc-pg = "4.9.2"`
 - Remove direct `log` and `env_logger`.
 - Add `tracing` and `tracing-subscriber`.
 

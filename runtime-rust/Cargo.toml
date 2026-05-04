@@ -1,23 +1,27 @@
 [package]
 name = "db-api-rs"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-axum = "0.7"
-tower-http = { version = "0.5", features = ["cors"] }
-rbatis = { version = "4.0" }
-rbs = "4.0"
-rbdc-sqlite = "4.0"
-rbdc-mysql = "4.0"
-rbdc-pg = "4.0"
+axum = "0.8.9"
+tower-http = { version = "0.6.8", features = ["cors", "trace"] }
+rbatis = { version = "=4.9.2" }
+rbs = "=4.8.4"
+rbdc-sqlite = "=4.9.2"
+rbdc-mysql = "=4.9.2"
+rbdc-pg = "=4.9.2"
 sqlparser = "0.43"
 moka = { version = "0.12", features = ["future"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_urlencoded = "0.7"
 dashmap = "5.5"
 anyhow = "1.0"
-log = "0.4"
-env_logger = "0.10"
 tower = { version = "0.5.3", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"

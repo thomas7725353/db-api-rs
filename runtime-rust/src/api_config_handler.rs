@@ -10,6 +10,7 @@ use axum::{
     response::IntoResponse,
 };
 use serde_json::{Value as JsonValue, json};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub async fn add(State(state): State<Arc<AppState>>, request: Request<Body>) -> impl IntoResponse {
@@ -153,14 +154,36 @@ pub async fn request_proxy(request: Request<Body>) -> impl IntoResponse {
         Ok(input) => input,
         Err(e) => return Json(json!({ "success": false, "data": e.to_string() })).into_response(),
     };
-    Json(json!({
-        "success": false,
-        "data": format!(
-            "Rust 单机版暂不代理请求: {}",
-            input.get("url").and_then(JsonValue::as_str).unwrap_or("")
-        )
-    }))
-    .into_response()
+    let Some(url) = input.get("url").and_then(JsonValue::as_str) else {
+        return Json(json!({ "success": false, "data": "url不能为空" })).into_response();
+    };
+    let params = input
+        .get("params")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("{}");
+    let form_params = match serde_json::from_str::<HashMap<String, String>>(params) {
+        Ok(params) => params,
+        Err(e) => {
+            return Json(json!({
+                "success": false,
+                "data": format!("params格式错误: {}", e)
+            }))
+            .into_response();
+        }
+    };
+
+    match reqwest::Client::new()
+        .post(url)
+        .form(&form_params)
+        .send()
+        .await
+    {
+        Ok(response) => match response.text().await {
+            Ok(text) => Json(json!({ "success": true, "data": text })).into_response(),
+            Err(e) => Json(json!({ "success": false, "data": e.to_string() })).into_response(),
+        },
+        Err(e) => Json(json!({ "success": false, "data": e.to_string() })).into_response(),
+    }
 }
 
 async fn set_status(state: Arc<AppState>, id: i32, status: i32) -> impl IntoResponse {

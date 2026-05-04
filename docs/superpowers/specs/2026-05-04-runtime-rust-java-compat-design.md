@@ -14,6 +14,7 @@ This spec supersedes the broad Rust refactor direction for the immediate impleme
 - Keep `/api/{path}` dynamic SQL execution compatible with current configured APIs.
 - Upgrade the Rust runtime to current stable dependencies: Rust 2024 edition, Axum 0.8, RBatis/RBDC 4.9 series, and the tracing ecosystem.
 - Support single-machine metadata, cache, and connection-pool behavior.
+- Provide Docker Compose packaging when no usable compose file exists, so the current frontend and Rust backend can run together with one command.
 
 ## Non-Goals
 
@@ -172,6 +173,15 @@ Update the Rust runtime dependency baseline:
 
 Code should use `tracing::{info, warn, error, instrument}` where useful and initialize logging through `tracing_subscriber`.
 
+### Docker Compose Packaging
+
+If no usable `docker-compose.yml` exists, add one at the repository root. The compose setup should start:
+
+- `db-api-rs`: Rust backend on container port `8520`, with persistent access to `data.db`.
+- `db-api-web`: current Vue frontend served on port `8521`, proxying backend API calls to `db-api-rs:8520`.
+
+The frontend container may build the Vue app and serve static assets through Nginx. Its Nginx config must proxy `/api/`, `/apiConfig/`, `/datasource/`, and `/health` to the Rust backend so the browser observes the same API paths as local development.
+
 ## Error Handling
 
 - Do not leak raw backend driver errors to dynamic API clients.
@@ -202,6 +212,8 @@ Final verification should include:
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo check`
 - A lightweight webapp compatibility smoke path proving the Vue backend calls can hit Rust routes without 404 or content-type failures.
+- `docker compose config`
+- `docker compose up --build` smoke verification when Docker is available.
 
 ## Acceptance Criteria
 
@@ -213,3 +225,4 @@ Final verification should include:
 - Dynamic online APIs execute through Rust.
 - Admin changes are immediately reflected in runtime execution without restarting Rust.
 - Rust runtime builds and tests cleanly on the upgraded dependency stack.
+- A root `docker-compose.yml` can run the existing frontend and Rust backend together if the repository did not already have a usable compose file.

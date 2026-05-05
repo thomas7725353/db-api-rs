@@ -1,11 +1,17 @@
-import { App, Button, Card, Form, Input, Radio, Select, Space, Tabs, Typography } from 'antd';
+import { Alert, App, Button, Card, Form, Input, Radio, Select, Space, Tabs, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { apiConfigService, datasourceService, groupService } from '../api/services';
-import type { ApiConfig, ApiEngine, ApiGroup, DataSource, ParamSpec, QueryBuilderDsl } from '../api/types';
+import { apiConfigService, datasourceService, groupService, tableService } from '../api/services';
+import type { ApiConfig, ApiEngine, ApiGroup, DataSource, ParamSpec, QueryBuilderDsl, TableColumn } from '../api/types';
 import type { RuleGroupType, RuleType } from 'react-querybuilder';
 import ParamEditor, { parseParamSpecs, stringifyParamSpecs } from '../components/ParamEditor';
 import QueryBuilderEditor from '../components/QueryBuilderEditor';
+import {
+  columnParamOptions,
+  hasFixedIdParamContract,
+  inferSqlTableName,
+  syncParamTypesFromColumns,
+} from '../components/sqlParamSchema';
 
 const defaultDsl: QueryBuilderDsl = {
   type: 'queryBuilder',
@@ -38,30 +44,15 @@ export default function ApiEditorPage() {
     { name: 'limit', type: 'bigint' },
     { name: 'offset', type: 'bigint' },
   ]);
+  const [jsonParam, setJsonParam] = useState('');
+  const [sqlTables, setSqlTables] = useState<string[]>([]);
+  const [sqlTable, setSqlTable] = useState('');
+  const [sqlColumns, setSqlColumns] = useState<TableColumn[]>([]);
+  const [sqlSchemaError, setSqlSchemaError] = useState<string>();
 
   const selectedDatasourceId = Form.useWatch('datasourceId', form);
   const contentType = Form.useWatch('contentType', form) || 'application/json';
   const isEdit = Boolean(id);
-  const editorTabs = useMemo(() => {
-    const queryBuilderTab = {
-      key: 'queryBuilder',
-      label: 'QueryBuilder',
-      children: <QueryBuilderEditor value={dsl} datasourceId={selectedDatasourceId} onChange={setDsl} />,
-    };
-    const sqlTab = {
-      key: 'sql',
-      label: 'SQL',
-      children: (
-        <Input.TextArea
-          rows={16}
-          value={sqlText}
-          onChange={(event) => setSqlText(event.target.value)}
-        />
-      ),
-    };
-    if (!isEdit) return [queryBuilderTab, sqlTab];
-    return engine === 'queryBuilder' ? [queryBuilderTab] : [sqlTab];
-  }, [dsl, engine, isEdit, selectedDatasourceId, sqlText]);
 
   useEffect(() => {
     void Promise.all([datasourceService.list(), groupService.list()]).then(([ds, gs]) => {
@@ -76,6 +67,7 @@ export default function ApiEditorPage() {
       if (!detail) return;
       form.setFieldsValue(detail);
       setParams(parseParamSpecs(detail.params));
+      setJsonParam(detail.jsonParam || '');
       const firstSql = detail.sqlList?.[0];
       if (firstSql?.transformPlugin === 'queryBuilder') {
         setEngine('queryBuilder');
@@ -88,9 +80,44 @@ export default function ApiEditorPage() {
       } else {
         setEngine('sql');
         setSqlText(firstSql?.sqlText || '');
+        setSqlTable(inferSqlTableName(firstSql?.sqlText || ''));
       }
     });
   }, [form, id]);
+
+  useEffect(() => {
+    setSqlTables([]);
+    setSqlColumns([]);
+    setSqlSchemaError(undefined);
+    if (!selectedDatasourceId || engine !== 'sql') return;
+    void tableService
+      .tables(selectedDatasourceId)
+      .then((items) => {
+        setSqlTables(items);
+        setSqlSchemaError(undefined);
+      })
+      .catch((error: Error) => setSqlSchemaError(error.message));
+  }, [engine, selectedDatasourceId]);
+
+  useEffect(() => {
+    if (engine !== 'sql' || sqlTable) return;
+    const inferredTable = inferSqlTableName(sqlText);
+    if (inferredTable) setSqlTable(inferredTable);
+  }, [engine, sqlTable, sqlText]);
+
+  useEffect(() => {
+    setSqlColumns([]);
+    setSqlSchemaError(undefined);
+    if (!selectedDatasourceId || engine !== 'sql' || !sqlTable) return;
+    void tableService
+      .columns(selectedDatasourceId, sqlTable)
+      .then((items) => {
+        setSqlColumns(items);
+        setParams((current) => syncParamTypesFromColumns(current, items));
+        setSqlSchemaError(undefined);
+      })
+      .catch((error: Error) => setSqlSchemaError(error.message));
+  }, [engine, selectedDatasourceId, sqlTable]);
 
   const datasourceOptions = useMemo(
     () => datasources.map((item) => ({ value: item.id, label: `${item.name} (${item.type})` })),
@@ -101,6 +128,43 @@ export default function ApiEditorPage() {
     () => groups.map((item) => ({ value: item.id, label: item.name || item.id })),
     [groups],
   );
+
+  const sqlFieldOptions = useMemo(() => columnParamOptions(sqlColumns), [sqlColumns]);
+  const fixedSqlParams = useMemo(() => hasFixedIdParamContract(sqlText, params), [params, sqlText]);
+
+  const editorTabs = useMemo(() => {
+    const queryBuilderTab = {
+      key: 'queryBuilder',
+      label: 'QueryBuilder',
+      children: <QueryBuilderEditor value={dsl} datasourceId={selectedDatasourceId} onChange={setDsl} />,
+    };
+    const sqlTab = {
+      key: 'sql',
+      label: 'SQL',
+      children: (
+        <div className="space-y-3">
+          <Select
+            showSearch
+            allowClear
+            className="max-w-sm"
+            value={sqlTable || undefined}
+            options={sqlTables.map((table) => ({ value: table, label: table }))}
+            placeholder={selectedDatasourceId ? '从真实 schema 选择表' : '请先选择数据源'}
+            notFoundContent={selectedDatasourceId ? '暂无表；可检查数据源' : '请先选择数据源'}
+            onChange={(table) => setSqlTable(table || '')}
+          />
+          {sqlSchemaError ? <Alert type="warning" showIcon message={sqlSchemaError} /> : null}
+          <Input.TextArea
+            rows={16}
+            value={sqlText}
+            onChange={(event) => setSqlText(event.target.value)}
+          />
+        </div>
+      ),
+    };
+    if (!isEdit) return [queryBuilderTab, sqlTab];
+    return engine === 'queryBuilder' ? [queryBuilderTab] : [sqlTab];
+  }, [dsl, engine, isEdit, selectedDatasourceId, sqlSchemaError, sqlTable, sqlTables, sqlText]);
 
   async function save() {
     const values = await form.validateFields();
@@ -126,7 +190,7 @@ export default function ApiEditorPage() {
             : stringifyParamSpecs(params),
       sqlList,
       contentType: values.contentType || 'application/json',
-      jsonParam: contentType === 'application/json' ? values.jsonParam : undefined,
+      jsonParam: contentType === 'application/json' ? jsonParam : undefined,
       previlege: values.previlege ?? 1,
       openTrans: values.openTrans ?? 0,
     };
@@ -224,15 +288,24 @@ export default function ApiEditorPage() {
 
       <Card title="请求参数定义">
         {contentType === 'application/json' ? (
-          <Form form={form} layout="vertical">
-            <Form.Item name="jsonParam" label="JSON 参数示例">
-              <Input.TextArea rows={8} placeholder='例如 {"id": 1, "status": "active"}' />
-            </Form.Item>
-          </Form>
+          <Input.TextArea
+            rows={8}
+            value={jsonParam}
+            placeholder='例如 {"id": 1, "status": "active"}'
+            onChange={(event) => setJsonParam(event.target.value)}
+          />
         ) : engine === 'queryBuilder' ? (
           <ParamEditor value={inferParams(sanitizeDsl(dsl))} readonly emptyText="当前 QueryBuilder 没有绑定请求参数" />
         ) : (
-          <ParamEditor value={params} onChange={setParams} />
+          <ParamEditor
+            value={params}
+            onChange={setParams}
+            fieldOptions={sqlFieldOptions.length > 0 ? sqlFieldOptions : undefined}
+            lockTypes={sqlFieldOptions.length > 0}
+            lockNames={fixedSqlParams}
+            disableAdd={fixedSqlParams}
+            disableRemove={fixedSqlParams}
+          />
         )}
       </Card>
     </div>
@@ -254,8 +327,8 @@ function parseResponseMode(raw?: string): QueryBuilderResponseMode {
 function inferParams(dsl: QueryBuilderDsl): ParamSpec[] {
   const params = new Map<string, ParamSpec>();
   collectRuleParams(dsl.rules, params);
-  if (dsl.limit?.param) params.set(dsl.limit.param, { name: dsl.limit.param, type: 'number' });
-  if (dsl.offset?.param) params.set(dsl.offset.param, { name: dsl.offset.param, type: 'number' });
+  if (dsl.limit?.param) params.set(dsl.limit.param, { name: dsl.limit.param, type: 'bigint' });
+  if (dsl.offset?.param) params.set(dsl.offset.param, { name: dsl.offset.param, type: 'bigint' });
   return [...params.values()];
 }
 

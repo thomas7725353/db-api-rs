@@ -48,11 +48,11 @@ VALUES (
 
 DELETE FROM api_sql WHERE api_id IN (
   'demo_item_create', 'demo_item_get', 'demo_item_update', 'demo_item_delete',
-  'demo_item_list', 'demo_item_filter', 'demo_item_count'
+  'demo_item_list', 'demo_item_qb_list', 'demo_item_filter', 'demo_item_count'
 );
 DELETE FROM api_config WHERE id IN (
   'demo_item_create', 'demo_item_get', 'demo_item_update', 'demo_item_delete',
-  'demo_item_list', 'demo_item_filter', 'demo_item_count'
+  'demo_item_list', 'demo_item_qb_list', 'demo_item_filter', 'demo_item_count'
 );
 
 INSERT INTO api_config (id, path, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param)

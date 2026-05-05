@@ -1,3 +1,4 @@
+use crate::db;
 use crate::form::parse_request_body;
 use crate::handler::AppState;
 use crate::model::{ApiGroup, AppInfo};
@@ -10,6 +11,9 @@ use axum::{
     http::Request,
     response::IntoResponse,
 };
+use sea_orm::DbBackend;
+use sea_query::Value;
+use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
 use std::sync::Arc;
 
@@ -207,12 +211,176 @@ pub async fn app_get_auth_groups(
     }
 }
 
-pub async fn table_get_all_tables() -> impl IntoResponse {
-    Json(json!([]))
+pub async fn table_get_all_tables(
+    State(state): State<Arc<AppState>>,
+    request: Request<Body>,
+) -> impl IntoResponse {
+    let input = parse_request_body(request)
+        .await
+        .unwrap_or_else(|_| json!({}));
+    let Some(datasource_id) = datasource_id_from_input(&input) else {
+        return dto_fail("datasourceId is required").into_response();
+    };
+
+    let data_db = match open_table_datasource(&state, &datasource_id).await {
+        Ok(data_db) => data_db,
+        Err(e) => return dto_fail(format!("Failed to open datasource: {}", e)).into_response(),
+    };
+
+    match list_datasource_tables(&data_db).await {
+        Ok(tables) => Json(json!(tables)).into_response(),
+        Err(e) => dto_fail(format!("Failed to list tables: {}", e)).into_response(),
+    }
 }
 
-pub async fn table_get_all_columns() -> impl IntoResponse {
-    Json(json!([]))
+pub async fn table_get_all_columns(
+    State(state): State<Arc<AppState>>,
+    request: Request<Body>,
+) -> impl IntoResponse {
+    let input = parse_request_body(request)
+        .await
+        .unwrap_or_else(|_| json!({}));
+    let Some(datasource_id) = datasource_id_from_input(&input) else {
+        return dto_fail("datasourceId is required").into_response();
+    };
+    let Some(table) = table_name_from_input(&input) else {
+        return dto_fail("table is required").into_response();
+    };
+
+    let data_db = match open_table_datasource(&state, &datasource_id).await {
+        Ok(data_db) => data_db,
+        Err(e) => return dto_fail(format!("Failed to open datasource: {}", e)).into_response(),
+    };
+
+    match list_datasource_columns(&data_db, &table).await {
+        Ok(columns) => Json(json!(columns)).into_response(),
+        Err(e) => dto_fail(format!("Failed to list columns: {}", e)).into_response(),
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ColumnInfo {
+    name: String,
+    #[serde(rename = "type")]
+    column_type: String,
+}
+
+async fn open_table_datasource(
+    state: &AppState,
+    datasource_id: &str,
+) -> anyhow::Result<db::DbConn> {
+    let ds = repository::select_datasource_by_id(&state.metadata_db, datasource_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Datasource not found: {}", datasource_id))?;
+    state.pool_manager.get_or_create(&ds).await
+}
+
+async fn list_datasource_tables(data_db: &db::DbConn) -> anyhow::Result<Vec<String>> {
+    let sql = match data_db.backend {
+        DbBackend::Sqlite => {
+            "select name from sqlite_master where type = 'table' and name not like 'sqlite_%' order by name"
+        }
+        DbBackend::MySql => {
+            "select table_name as name from information_schema.tables where table_schema = database() and table_type = 'BASE TABLE' order by table_name"
+        }
+        DbBackend::Postgres => {
+            "select table_name as name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE' order by table_name"
+        }
+    };
+    let rows = db::query_json(data_db, sql, vec![]).await?;
+    Ok(rows.into_iter().filter_map(extract_name).collect())
+}
+
+async fn list_datasource_columns(
+    data_db: &db::DbConn,
+    table: &str,
+) -> anyhow::Result<Vec<ColumnInfo>> {
+    match data_db.backend {
+        DbBackend::Sqlite => {
+            validate_table_identifier(table)?;
+            let sql = format!("PRAGMA table_info(\"{}\")", escape_sqlite_identifier(table));
+            rows_to_columns(db::query_json(data_db, &sql, vec![]).await?)
+        }
+        DbBackend::MySql => rows_to_columns(
+            db::query_json(
+                data_db,
+                "select column_name as name, data_type as type from information_schema.columns where table_schema = database() and table_name = ? order by ordinal_position",
+                vec![string_value(table)],
+            )
+            .await?,
+        ),
+        DbBackend::Postgres => rows_to_columns(
+            db::query_json(
+                data_db,
+                "select column_name as name, data_type as type from information_schema.columns where table_schema = 'public' and table_name = $1 order by ordinal_position",
+                vec![string_value(table)],
+            )
+            .await?,
+        ),
+    }
+}
+
+fn rows_to_columns(rows: Vec<JsonValue>) -> anyhow::Result<Vec<ColumnInfo>> {
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let object = row.as_object()?;
+            let name = object.get("name")?.as_str()?.to_string();
+            let column_type = object
+                .get("type")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("")
+                .to_string();
+            Some(ColumnInfo { name, column_type })
+        })
+        .collect())
+}
+
+fn datasource_id_from_input(input: &JsonValue) -> Option<String> {
+    get_string(input, "datasourceId")
+        .or_else(|| get_string(input, "datasource_id"))
+        .or_else(|| get_string(input, "id"))
+}
+
+fn table_name_from_input(input: &JsonValue) -> Option<String> {
+    get_string(input, "table")
+        .or_else(|| get_string(input, "tableName"))
+        .or_else(|| get_string(input, "table_name"))
+}
+
+fn extract_name(row: JsonValue) -> Option<String> {
+    match row {
+        JsonValue::Object(object) => object
+            .get("name")
+            .and_then(JsonValue::as_str)
+            .map(str::to_string)
+            .or_else(|| object.into_values().next()?.as_str().map(str::to_string)),
+        JsonValue::String(value) => Some(value),
+        _ => None,
+    }
+}
+
+fn string_value(value: &str) -> Value {
+    Value::String(Some(Box::new(value.to_string())))
+}
+
+fn validate_table_identifier(value: &str) -> anyhow::Result<()> {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return Err(anyhow::anyhow!("table is required"));
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(anyhow::anyhow!("Invalid table: {}", value));
+    }
+    if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return Err(anyhow::anyhow!("Invalid table: {}", value));
+    }
+    Ok(())
+}
+
+fn escape_sqlite_identifier(value: &str) -> String {
+    value.replace('"', "\"\"")
 }
 
 pub async fn token_generate(
@@ -388,4 +556,23 @@ fn get_string(input: &JsonValue, key: &str) -> Option<String> {
         .get(key)
         .and_then(JsonValue::as_str)
         .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unsafe_sqlite_table_identifier() {
+        assert!(validate_table_identifier("users").is_ok());
+        assert!(validate_table_identifier("user_2026").is_ok());
+        assert!(validate_table_identifier("users;drop").is_err());
+        assert!(validate_table_identifier("public.users").is_err());
+        assert!(validate_table_identifier("1users").is_err());
+    }
+
+    #[test]
+    fn escapes_sqlite_identifier_quotes_defensively() {
+        assert_eq!(escape_sqlite_identifier("a\"b"), "a\"\"b");
+    }
 }

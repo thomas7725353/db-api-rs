@@ -243,7 +243,14 @@ pub async fn handle_api(
                 return api_error(StatusCode::BAD_REQUEST, message).into_response();
             }
         };
-        match execute_query_builder(&data_db, &dsl, &all_params).await {
+        match execute_query_builder(
+            &data_db,
+            &dsl,
+            &all_params,
+            first_sql.and_then(|sql| sql.transform_plugin_params.as_deref()),
+        )
+        .await
+        {
             Ok(data) => {
                 write_access_log(
                     &state,
@@ -430,17 +437,16 @@ fn is_single_row_response(params: Option<&str>) -> bool {
     if raw.eq_ignore_ascii_case("single") || raw.eq_ignore_ascii_case("one") {
         return true;
     }
-    if raw
-        .split([';', '&', ',', '\n'])
-        .map(str::trim)
-        .any(|part| {
-            let Some((key, value)) = part.split_once('=') else {
-                return false;
-            };
-            key.trim().eq_ignore_ascii_case("resultType")
-                && matches!(value.trim().to_ascii_lowercase().as_str(), "object" | "one" | "single")
-        })
-    {
+    if raw.split([';', '&', ',', '\n']).map(str::trim).any(|part| {
+        let Some((key, value)) = part.split_once('=') else {
+            return false;
+        };
+        key.trim().eq_ignore_ascii_case("resultType")
+            && matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "object" | "one" | "single"
+            )
+    }) {
         return true;
     }
 
@@ -460,20 +466,26 @@ async fn execute_query_builder(
     data_db: &DbConn,
     dsl: &QueryBuilderDsl,
     input: &JsonValue,
+    plugin_params: Option<&str>,
 ) -> Result<JsonValue> {
     let built = query_dsl::build_query(dsl, input, data_db.backend)?;
+    let result_type = parse_result_type(plugin_params);
+    if result_type == "count" {
+        let Some(count_sql) = built.count_sql else {
+            return Ok(json!(0));
+        };
+        return Ok(json!(
+            query_builder_total(data_db, &count_sql, built.count_values).await?
+        ));
+    }
+
     let rows = db::query_json(data_db, &built.sql, built.values).await?;
+    if matches!(result_type.as_str(), "object" | "one" | "single") {
+        return Ok(rows.into_iter().next().unwrap_or(JsonValue::Null));
+    }
+
     if let Some(count_sql) = built.count_sql {
-        let total = db::query_one_json(data_db, &count_sql, built.count_values)
-            .await?
-            .and_then(first_json_value)
-            .and_then(|value| {
-                value
-                    .as_i64()
-                    .or_else(|| value.as_u64().and_then(|raw| i64::try_from(raw).ok()))
-                    .or_else(|| value.as_str()?.parse::<i64>().ok())
-            })
-            .unwrap_or(rows.len() as i64);
+        let total = query_builder_total(data_db, &count_sql, built.count_values).await?;
         Ok(json!({
             "list": rows,
             "total": total,
@@ -483,6 +495,45 @@ async fn execute_query_builder(
     } else {
         Ok(JsonValue::Array(rows))
     }
+}
+
+async fn query_builder_total(
+    data_db: &DbConn,
+    count_sql: &str,
+    values: Vec<sea_query::Value>,
+) -> Result<i64> {
+    Ok(db::query_one_json(data_db, count_sql, values)
+        .await?
+        .and_then(first_json_value)
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_u64().and_then(|raw| i64::try_from(raw).ok()))
+                .or_else(|| value.as_str()?.parse::<i64>().ok())
+        })
+        .unwrap_or(0))
+}
+
+fn parse_result_type(params: Option<&str>) -> String {
+    let Some(raw) = params.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return "list".to_string();
+    };
+    if let Some(value) = raw
+        .strip_prefix("resultType=")
+        .or_else(|| raw.strip_prefix("result_type="))
+    {
+        return value.trim().to_ascii_lowercase();
+    }
+    serde_json::from_str::<JsonValue>(raw)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("resultType")
+                .or_else(|| value.get("result_type"))
+                .and_then(JsonValue::as_str)
+                .map(|value| value.to_ascii_lowercase())
+        })
+        .unwrap_or_else(|| "list".to_string())
 }
 
 fn first_json_value(value: JsonValue) -> Option<JsonValue> {

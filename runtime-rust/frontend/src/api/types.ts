@@ -76,6 +76,15 @@ export interface AccessLog {
   error?: string;
 }
 
+export interface TableInfo {
+  name: string;
+}
+
+export interface TableColumn {
+  name: string;
+  type?: string;
+}
+
 export interface QueryBuilderDsl {
   type: 'queryBuilder';
   table: string;
@@ -89,7 +98,8 @@ export interface QueryBuilderDsl {
 
 export interface ParamSpec {
   name: string;
-  type: 'string' | 'number' | 'date' | string;
+  type: 'string' | 'bigint' | 'double' | 'date' | 'Array<string>' | 'Array<bigint>' | 'Array<double>' | 'Array<date>' | string;
+  note?: string;
   value?: unknown;
   values?: Array<{ va: unknown }>;
 }

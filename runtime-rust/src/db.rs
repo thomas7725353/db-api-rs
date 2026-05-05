@@ -7,6 +7,7 @@ use sea_orm::{
 use sea_query::Value;
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone)]
 pub struct DbConn {
@@ -22,12 +23,14 @@ impl DbConn {
 
 pub struct DbPoolManager {
     pools: DashMap<String, DbConn>,
+    sqlite_base_dir: Option<PathBuf>,
 }
 
 impl DbPoolManager {
-    pub fn new() -> Self {
+    pub fn new(sqlite_base_dir: Option<PathBuf>) -> Self {
         Self {
             pools: DashMap::new(),
+            sqlite_base_dir,
         }
     }
 
@@ -41,7 +44,7 @@ impl DbPoolManager {
             return Ok(existing.clone());
         }
 
-        let conn = connect_data_source(ds).await?;
+        let conn = connect_data_source_with_base(ds, self.sqlite_base_dir.as_deref()).await?;
         self.pools.insert(id.to_string(), conn.clone());
         Ok(conn)
     }
@@ -56,12 +59,25 @@ pub async fn connect_metadata(url: &str) -> Result<DbConn> {
 }
 
 pub async fn connect_data_source(ds: &DataSource) -> Result<DbConn> {
+    connect_data_source_with_base(ds, None).await
+}
+
+async fn connect_data_source_with_base(
+    ds: &DataSource,
+    sqlite_base_dir: Option<&Path>,
+) -> Result<DbConn> {
     let db_type = ds.db_type.as_deref().unwrap_or("sqlite");
     let url = ds
         .url
         .as_deref()
         .ok_or_else(|| anyhow!("DataSource URL is required"))?;
-    let url = normalize_url(db_type, url, ds.username.as_deref(), ds.password.as_deref())?;
+    let url = normalize_url_with_base(
+        db_type,
+        url,
+        ds.username.as_deref(),
+        ds.password.as_deref(),
+        sqlite_base_dir,
+    )?;
     connect_url(&url).await
 }
 
@@ -77,6 +93,16 @@ pub fn normalize_url(
     username: Option<&str>,
     password: Option<&str>,
 ) -> Result<String> {
+    normalize_url_with_base(db_type, url, username, password, None)
+}
+
+fn normalize_url_with_base(
+    db_type: &str,
+    url: &str,
+    username: Option<&str>,
+    password: Option<&str>,
+    sqlite_base_dir: Option<&Path>,
+) -> Result<String> {
     let raw = url.trim();
     if raw.is_empty() {
         return Err(anyhow!("DataSource URL is required"));
@@ -84,7 +110,7 @@ pub fn normalize_url(
 
     let normalized_type = normalize_db_type(db_type);
     match normalized_type.as_str() {
-        "sqlite" => normalize_sqlite_url(raw),
+        "sqlite" => normalize_sqlite_url(raw, sqlite_base_dir),
         "mysql" => normalize_server_url("mysql", raw, username, password),
         "postgres" => normalize_server_url("postgres", raw, username, password),
         other => Err(anyhow!("Unsupported database type: {}", other)),
@@ -99,23 +125,60 @@ fn normalize_db_type(db_type: &str) -> String {
     }
 }
 
-fn normalize_sqlite_url(raw: &str) -> Result<String> {
+fn normalize_sqlite_url(raw: &str, base_dir: Option<&Path>) -> Result<String> {
     if raw == "jdbc:sqlite::memory:" {
         return Ok("sqlite::memory:".to_string());
     }
-    if raw.starts_with("sqlite:") {
-        return Ok(raw.to_string());
+    if let Some(path) = raw.strip_prefix("sqlite://") {
+        return Ok(sqlite_url_from_path_with_query(path, "", base_dir));
     }
     if let Some(path) = raw.strip_prefix("jdbc:sqlite:") {
         if path == ":memory:" {
             return Ok("sqlite::memory:".to_string());
         }
-        if path.starts_with('/') {
-            return Ok(format!("sqlite://{}?mode=rwc", path));
-        }
-        return Ok(format!("sqlite://{}?mode=rwc", path));
+        return Ok(sqlite_url_from_path_with_query(path, "?mode=rwc", base_dir));
     }
-    Ok(format!("sqlite://{}?mode=rwc", raw))
+    Ok(sqlite_url_from_path_with_query(raw, "?mode=rwc", base_dir))
+}
+
+fn sqlite_url_from_path_with_query(
+    raw_path: &str,
+    default_query: &str,
+    base_dir: Option<&Path>,
+) -> String {
+    let (path, query) = split_sqlite_path_query(raw_path, default_query);
+    let resolved = resolve_sqlite_path(path, base_dir);
+    format!("sqlite://{}{}", resolved.display(), query)
+}
+
+fn split_sqlite_path_query<'a>(raw_path: &'a str, default_query: &'a str) -> (&'a str, &'a str) {
+    raw_path
+        .split_once('?')
+        .map(|(path, query)| (path, &raw_path[path.len()..]))
+        .unwrap_or((raw_path, default_query))
+}
+
+fn resolve_sqlite_path(path: &str, base_dir: Option<&Path>) -> PathBuf {
+    let candidate = Path::new(path);
+    if candidate.is_absolute() {
+        return candidate.to_path_buf();
+    }
+    base_dir
+        .map(|base| base.join(candidate))
+        .unwrap_or_else(|| candidate.to_path_buf())
+}
+
+pub fn sqlite_base_dir_from_url(url: &str) -> Option<PathBuf> {
+    let raw = url.trim();
+    if raw == "sqlite::memory:" || raw == "jdbc:sqlite::memory:" {
+        return None;
+    }
+    let path = raw
+        .strip_prefix("sqlite://")
+        .or_else(|| raw.strip_prefix("jdbc:sqlite:"))
+        .unwrap_or(raw);
+    let (path, _) = split_sqlite_path_query(path, "");
+    Path::new(path).parent().map(Path::to_path_buf)
 }
 
 fn normalize_server_url(
@@ -220,6 +283,44 @@ mod tests {
         assert_eq!(
             normalize_url("sqlite", "jdbc:sqlite::memory:", None, None).unwrap(),
             "sqlite::memory:"
+        );
+    }
+
+    #[test]
+    fn resolves_relative_sqlite_urls_against_metadata_dir() {
+        assert_eq!(
+            normalize_url_with_base(
+                "sqlite",
+                "sqlite://data.db",
+                None,
+                None,
+                Some(Path::new("/data"))
+            )
+            .unwrap(),
+            "sqlite:///data/data.db"
+        );
+        assert_eq!(
+            normalize_url_with_base(
+                "sqlite",
+                "jdbc:sqlite:data.db",
+                None,
+                None,
+                Some(Path::new("/data"))
+            )
+            .unwrap(),
+            "sqlite:///data/data.db?mode=rwc"
+        );
+    }
+
+    #[test]
+    fn extracts_sqlite_metadata_base_dir() {
+        assert_eq!(
+            sqlite_base_dir_from_url("sqlite:///data/data.db").unwrap(),
+            PathBuf::from("/data")
+        );
+        assert_eq!(
+            sqlite_base_dir_from_url("sqlite://../data.db").unwrap(),
+            PathBuf::from("..")
         );
     }
 

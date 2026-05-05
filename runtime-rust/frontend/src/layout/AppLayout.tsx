@@ -4,7 +4,7 @@ import {
   DatabaseOutlined,
   KeyOutlined,
 } from '@ant-design/icons';
-import { Layout, Menu, Space, Tag, Typography } from 'antd';
+import { Layout, Menu, Tag, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { systemService } from '../api/services';
@@ -33,18 +33,18 @@ export default function AppLayout() {
 
   return (
     <Layout className="min-h-screen">
-      <Header className="sticky top-0 z-10 flex items-center gap-5 bg-[#4caf7a] px-5">
-        <Space className="min-w-[190px]" align="center">
-          <DatabaseOutlined className="text-3xl text-white" />
-          <div>
-            <Typography.Text className="block text-lg font-bold text-white">DBAPI</Typography.Text>
-            <Typography.Text className="text-xs text-white/85">{version}</Typography.Text>
+      <Header className="app-header">
+        <div className="app-brand">
+          <DatabaseOutlined className="app-brand-icon" />
+          <div className="app-brand-text">
+            <Typography.Text className="app-brand-title">DBAPI</Typography.Text>
+            <Typography.Text className="app-brand-version">{version}</Typography.Text>
           </div>
-        </Space>
+        </div>
         <Menu
           mode="horizontal"
           selectedKeys={[selectedKey]}
-          className="flex-1 border-0 bg-transparent text-white"
+          className="app-nav"
           onClick={(item) => navigate(item.key)}
           items={[
             { key: '/datasources', icon: <DatabaseOutlined />, label: '数据源' },
@@ -53,7 +53,7 @@ export default function AppLayout() {
             { key: '/monitor', icon: <BarChartOutlined />, label: '监控' },
           ]}
         />
-        <Tag color="green" className="m-0 bg-white/15 text-white">
+        <Tag color="green" className="app-mode-tag">
           {mode}
         </Tag>
       </Header>

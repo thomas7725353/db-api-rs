@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { apiConfigService, datasourceService, groupService } from '../api/services';
 import type { ApiConfig, ApiEngine, ApiGroup, DataSource, ParamSpec, QueryBuilderDsl } from '../api/types';
+import type { RuleGroupType, RuleType } from 'react-querybuilder';
+import ParamEditor, { parseParamSpecs, stringifyParamSpecs } from '../components/ParamEditor';
 import QueryBuilderEditor from '../components/QueryBuilderEditor';
 
 const defaultDsl: QueryBuilderDsl = {
@@ -19,6 +21,8 @@ const defaultDsl: QueryBuilderDsl = {
   count: true,
 };
 
+type QueryBuilderResponseMode = 'list' | 'page' | 'object' | 'count';
+
 export default function ApiEditorPage() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -29,9 +33,35 @@ export default function ApiEditorPage() {
   const [engine, setEngine] = useState<ApiEngine>('queryBuilder');
   const [sqlText, setSqlText] = useState('select * from demo_items limit $limit offset $offset');
   const [dsl, setDsl] = useState<QueryBuilderDsl>(defaultDsl);
-  const [paramsJson, setParamsJson] = useState('[{"name":"limit","type":"number"},{"name":"offset","type":"number"}]');
+  const [responseMode, setResponseMode] = useState<QueryBuilderResponseMode>('page');
+  const [params, setParams] = useState<ParamSpec[]>([
+    { name: 'limit', type: 'bigint' },
+    { name: 'offset', type: 'bigint' },
+  ]);
 
+  const selectedDatasourceId = Form.useWatch('datasourceId', form);
+  const contentType = Form.useWatch('contentType', form) || 'application/json';
   const isEdit = Boolean(id);
+  const editorTabs = useMemo(() => {
+    const queryBuilderTab = {
+      key: 'queryBuilder',
+      label: 'QueryBuilder',
+      children: <QueryBuilderEditor value={dsl} datasourceId={selectedDatasourceId} onChange={setDsl} />,
+    };
+    const sqlTab = {
+      key: 'sql',
+      label: 'SQL',
+      children: (
+        <Input.TextArea
+          rows={16}
+          value={sqlText}
+          onChange={(event) => setSqlText(event.target.value)}
+        />
+      ),
+    };
+    if (!isEdit) return [queryBuilderTab, sqlTab];
+    return engine === 'queryBuilder' ? [queryBuilderTab] : [sqlTab];
+  }, [dsl, engine, isEdit, selectedDatasourceId, sqlText]);
 
   useEffect(() => {
     void Promise.all([datasourceService.list(), groupService.list()]).then(([ds, gs]) => {
@@ -45,12 +75,13 @@ export default function ApiEditorPage() {
     void apiConfigService.detail(id).then((detail) => {
       if (!detail) return;
       form.setFieldsValue(detail);
-      setParamsJson(detail.params || '[]');
+      setParams(parseParamSpecs(detail.params));
       const firstSql = detail.sqlList?.[0];
       if (firstSql?.transformPlugin === 'queryBuilder') {
         setEngine('queryBuilder');
         try {
           setDsl(JSON.parse(firstSql.sqlText || '{}') as QueryBuilderDsl);
+          setResponseMode(parseResponseMode(firstSql.transformPluginParams));
         } catch {
           setDsl(defaultDsl);
         }
@@ -73,22 +104,29 @@ export default function ApiEditorPage() {
 
   async function save() {
     const values = await form.validateFields();
+    const queryBuilderDsl = sanitizeDsl(dsl);
     const sqlList =
       engine === 'queryBuilder'
         ? [
             {
-              sqlText: JSON.stringify(dsl, null, 2),
+              sqlText: JSON.stringify(queryBuilderDsl, null, 2),
               transformPlugin: 'queryBuilder',
-              transformPluginParams: '',
+              transformPluginParams: resultTypeParams(responseMode),
             },
           ]
         : [{ sqlText, transformPlugin: 'sql', transformPluginParams: '' }];
     const payload: ApiConfig = {
       ...values,
       id,
-      params: normalizeParams(paramsJson),
+      params:
+        engine === 'queryBuilder'
+          ? stringifyParamSpecs(inferParams(queryBuilderDsl))
+          : contentType === 'application/json'
+            ? '[]'
+            : stringifyParamSpecs(params),
       sqlList,
       contentType: values.contentType || 'application/json',
+      jsonParam: contentType === 'application/json' ? values.jsonParam : undefined,
       previlege: values.previlege ?? 1,
       openTrans: values.openTrans ?? 0,
     };
@@ -157,44 +195,116 @@ export default function ApiEditorPage() {
       </Card>
 
       <Card>
+        {engine === 'queryBuilder' ? (
+          <Form.Item label="返回模式">
+            <Select
+              className="max-w-sm"
+              value={responseMode}
+              options={[
+                { value: 'list', label: 'list：返回数组' },
+                { value: 'page', label: 'page：返回 list + total' },
+                { value: 'object', label: 'object：返回单个对象' },
+                { value: 'count', label: 'count：只返回总数' },
+              ]}
+              onChange={(mode: QueryBuilderResponseMode) => {
+                setResponseMode(mode);
+                setDsl((current) => ({ ...current, count: mode === 'page' || mode === 'count' }));
+              }}
+            />
+          </Form.Item>
+        ) : null}
         <Tabs
           activeKey={engine}
-          onChange={(key) => setEngine(key as ApiEngine)}
-          items={[
-            {
-              key: 'queryBuilder',
-              label: 'QueryBuilder',
-              children: <QueryBuilderEditor value={dsl} onChange={setDsl} />,
-            },
-            {
-              key: 'sql',
-              label: 'SQL',
-              children: (
-                <Input.TextArea
-                  rows={16}
-                  value={sqlText}
-                  onChange={(event) => setSqlText(event.target.value)}
-                />
-              ),
-            },
-          ]}
+          onChange={(key) => {
+            if (!isEdit) setEngine(key as ApiEngine);
+          }}
+          items={editorTabs}
         />
       </Card>
 
       <Card title="请求参数定义">
-        <Input.TextArea
-          rows={8}
-          value={paramsJson}
-          onChange={(event) => setParamsJson(event.target.value)}
-        />
+        {contentType === 'application/json' ? (
+          <Form form={form} layout="vertical">
+            <Form.Item name="jsonParam" label="JSON 参数示例">
+              <Input.TextArea rows={8} placeholder='例如 {"id": 1, "status": "active"}' />
+            </Form.Item>
+          </Form>
+        ) : engine === 'queryBuilder' ? (
+          <ParamEditor value={inferParams(sanitizeDsl(dsl))} readonly emptyText="当前 QueryBuilder 没有绑定请求参数" />
+        ) : (
+          <ParamEditor value={params} onChange={setParams} />
+        )}
       </Card>
     </div>
   );
 }
 
-function normalizeParams(raw: string): string {
-  if (!raw.trim()) return '[]';
-  const parsed = JSON.parse(raw) as ParamSpec[];
-  if (!Array.isArray(parsed)) throw new Error('params 必须是数组 JSON');
-  return JSON.stringify(parsed);
+
+
+function resultTypeParams(mode: QueryBuilderResponseMode): string {
+  return `resultType=${mode}`;
+}
+
+function parseResponseMode(raw?: string): QueryBuilderResponseMode {
+  const value = raw?.match(/result_?type=([^&]+)/i)?.[1]?.toLowerCase();
+  if (value === 'object' || value === 'count' || value === 'list' || value === 'page') return value;
+  return 'page';
+}
+
+function inferParams(dsl: QueryBuilderDsl): ParamSpec[] {
+  const params = new Map<string, ParamSpec>();
+  collectRuleParams(dsl.rules, params);
+  if (dsl.limit?.param) params.set(dsl.limit.param, { name: dsl.limit.param, type: 'number' });
+  if (dsl.offset?.param) params.set(dsl.offset.param, { name: dsl.offset.param, type: 'number' });
+  return [...params.values()];
+}
+
+function collectRuleParams(group: RuleGroupType, params: Map<string, ParamSpec>) {
+  for (const node of group.rules ?? []) {
+    if ('rules' in node) {
+      collectRuleParams(node as RuleGroupType, params);
+      continue;
+    }
+    const rule = node as RuleType & { valueSource?: string; value?: unknown };
+    if (String(rule.valueSource) !== 'param') continue;
+    const paramName = extractParamName(rule.value);
+    if (!paramName || params.has(paramName)) continue;
+    params.set(paramName, { name: paramName, type: inferParamType(rule.operator, rule.value) });
+  }
+}
+
+function extractParamName(value: unknown): string | undefined {
+  if (typeof value === 'string') return value.trim() || undefined;
+  if (value && typeof value === 'object' && 'param' in value) {
+    const param = (value as { param?: unknown }).param;
+    return typeof param === 'string' ? param.trim() || undefined : undefined;
+  }
+  return undefined;
+}
+
+function inferParamType(operator: string, value: unknown): ParamSpec['type'] {
+  if (['in', 'not_in'].includes(operator)) return 'Array<string>';
+  const defaultValue = value && typeof value === 'object' && 'default' in value ? (value as { default?: unknown }).default : undefined;
+  if (typeof defaultValue === 'number') return 'double';
+  if (Array.isArray(defaultValue)) return 'Array<string>';
+  return 'string';
+}
+
+function sanitizeDsl(dsl: QueryBuilderDsl): QueryBuilderDsl {
+  return { ...dsl, rules: sanitizeGroup(dsl.rules) };
+}
+
+function sanitizeGroup(group: RuleGroupType): RuleGroupType {
+  return {
+    ...group,
+    rules: (group.rules ?? []).map((node) => {
+      if ('rules' in node) return sanitizeGroup(node as RuleGroupType);
+      const rule = { ...(node as RuleType & { value?: unknown }) };
+      if (String(rule.valueSource) === 'param' && rule.value && typeof rule.value === 'object' && 'param' in rule.value) {
+        const value = rule.value as { param?: unknown; default?: unknown };
+        rule.value = value.default === undefined ? String(value.param ?? '') : { param: value.param, default: value.default };
+      }
+      return rule;
+    }),
+  };
 }

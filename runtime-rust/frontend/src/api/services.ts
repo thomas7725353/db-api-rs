@@ -1,5 +1,5 @@
 import { apiGet, apiPost, apiRequest } from './client';
-import type { AccessLog, ApiConfig, ApiGroup, AppInfo, DataSource } from './types';
+import type { AccessLog, ApiConfig, ApiGroup, AppInfo, DataSource, TableColumn } from './types';
 
 export const systemService = {
   version: () => apiPost<string>('/system/version'),
@@ -15,6 +15,13 @@ export const datasourceService = {
   update: (input: DataSource) => apiPost<unknown>('/datasource/update', input),
   remove: (id: string) => apiPost<unknown>(`/datasource/delete/${id}`),
   connect: (input: DataSource) => apiPost<unknown>('/datasource/connect', input),
+};
+
+
+export const tableService = {
+  tables: (datasourceId?: string) => apiPost<string[]>('/table/getAllTables', { datasourceId }),
+  columns: (datasourceId?: string, table?: string) =>
+    apiPost<TableColumn[]>('/table/getAllColumns', { datasourceId, table }),
 };
 
 export const groupService = {

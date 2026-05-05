@@ -13,6 +13,91 @@ body {
   background: #f5f7fb;
 }
 
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: 72px;
+  padding: 0 28px;
+  line-height: normal;
+  background: #ffffff;
+  border-bottom: 1px solid #e6ebf2;
+  box-shadow: 0 1px 4px rgb(18 38 63 / 6%);
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 210px;
+  color: #2f6f55;
+}
+
+.app-brand-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  font-size: 24px;
+  color: #ffffff;
+  background: #4f946e;
+  border-radius: 8px;
+}
+
+.app-brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.app-brand-title {
+  display: block;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  color: #20352b;
+}
+
+.app-brand-version {
+  font-size: 12px;
+  line-height: 1;
+  color: #6f8278;
+}
+
+.app-nav {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border-bottom: 0;
+}
+
+.app-nav.ant-menu-horizontal {
+  line-height: 72px;
+}
+
+.app-nav .ant-menu-item {
+  color: #32443b;
+}
+
+.app-nav .ant-menu-item-selected {
+  color: #2f7d58;
+  font-weight: 600;
+}
+
+.app-nav .ant-menu-item-selected::after {
+  border-bottom-color: #4f946e !important;
+}
+
+.app-mode-tag {
+  margin: 0;
+  padding: 4px 12px;
+  font-weight: 600;
+  border-radius: 999px;
+}
+
 .query-builder-card .ant-card-body {
   background: #f7faff;
 }

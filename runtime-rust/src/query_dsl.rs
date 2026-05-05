@@ -50,7 +50,7 @@ pub enum RuleNode {
 pub struct Rule {
     pub field: String,
     pub operator: String,
-    #[serde(default)]
+    #[serde(default, alias = "value_source")]
     pub value_source: Option<String>,
     #[serde(default)]
     pub value: JsonValue,
@@ -280,20 +280,17 @@ struct ResolvedValue {
 
 fn resolve_value(rule: &Rule, input: &JsonValue) -> Result<ResolvedValue> {
     if rule.value_source.as_deref() == Some("param") {
-        let param = rule
-            .value
-            .as_str()
-            .ok_or_else(|| anyhow!("param value must be a string for field {}", rule.field))?;
-        if let Some(value) = input.get(param) {
+        let binding = param_binding(rule)?;
+        if let Some(value) = input.get(&binding.param) {
             return Ok(ResolvedValue {
                 missing: false,
                 value: Some(value.clone()),
             });
         }
-        if let Some(default) = &rule.default_value {
+        if let Some(default) = binding.default.or_else(|| rule.default_value.clone()) {
             return Ok(ResolvedValue {
                 missing: false,
-                value: Some(default.clone()),
+                value: Some(default),
             });
         }
         return Ok(ResolvedValue {
@@ -305,6 +302,41 @@ fn resolve_value(rule: &Rule, input: &JsonValue) -> Result<ResolvedValue> {
     Ok(ResolvedValue {
         missing: false,
         value: Some(rule.value.clone()),
+    })
+}
+
+#[derive(Debug)]
+struct ParamBinding {
+    param: String,
+    default: Option<JsonValue>,
+}
+
+fn param_binding(rule: &Rule) -> Result<ParamBinding> {
+    if let Some(param) = rule.value.as_str() {
+        return Ok(ParamBinding {
+            param: param.to_string(),
+            default: None,
+        });
+    }
+
+    let Some(object) = rule.value.as_object() else {
+        return Err(anyhow!(
+            "param value must be a string or object for field {}",
+            rule.field
+        ));
+    };
+    let param = object
+        .get("param")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| {
+            anyhow!(
+                "param object must include string param for field {}",
+                rule.field
+            )
+        })?;
+    Ok(ParamBinding {
+        param: param.to_string(),
+        default: object.get("default").cloned(),
     })
 }
 
@@ -395,10 +427,7 @@ fn json_to_i64(value: &JsonValue) -> Option<i64> {
 }
 
 fn normalize_operator(op: &str) -> String {
-    op.trim()
-        .replace(' ', "_")
-        .replace('-', "_")
-        .to_ascii_lowercase()
+    op.trim().replace([' ', '-'], "_").to_ascii_lowercase()
 }
 
 fn validate_identifier(value: &str, label: &str) -> Result<()> {
@@ -424,10 +453,10 @@ fn collect_group_params(group: &RuleGroup, params: &mut Vec<String>) {
             RuleNode::Group(group) => collect_group_params(group, params),
             RuleNode::Rule(rule) => {
                 if rule.value_source.as_deref() == Some("param")
-                    && let Some(param) = rule.value.as_str()
-                    && !params.iter().any(|item| item == param)
+                    && let Ok(binding) = param_binding(rule)
+                    && !params.iter().any(|item| item == &binding.param)
                 {
-                    params.push(param.to_string());
+                    params.push(binding.param);
                 }
             }
         }
@@ -536,6 +565,76 @@ mod tests {
         .unwrap();
 
         assert_eq!(built.values.len(), 4);
+    }
+
+    #[test]
+    fn param_object_uses_inline_default_when_input_missing() {
+        let dsl: QueryBuilderDsl = serde_json::from_value(json!({
+            "table": "demo_item",
+            "select": ["id"],
+            "rules": {
+                "combinator": "and",
+                "rules": [
+                    {
+                        "field": "status",
+                        "operator": "in",
+                        "valueSource": "param",
+                        "value": {"param": "statusList", "default": ["active", "pending"]},
+                        "skipWhen": ["missing", "empty_array"]
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+
+        let built = build_query(&dsl, &json!({}), DbBackend::Sqlite).unwrap();
+
+        assert!(built.sql.contains(" IN "));
+        assert_eq!(built.values.len(), 4);
+        assert_eq!(db_value_to_json(&built.values[0]), json!("active"));
+        assert_eq!(db_value_to_json(&built.values[1]), json!("pending"));
+    }
+
+    #[test]
+    fn param_object_without_default_is_missing_and_can_be_skipped() {
+        let dsl: QueryBuilderDsl = serde_json::from_value(json!({
+            "table": "demo_item",
+            "select": ["id"],
+            "rules": {
+                "combinator": "and",
+                "rules": [
+                    {
+                        "field": "status",
+                        "operator": "=",
+                        "valueSource": "param",
+                        "value": {"param": "status"},
+                        "skipWhen": ["missing"]
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+
+        let built = build_query(&dsl, &json!({}), DbBackend::Sqlite).unwrap();
+
+        assert!(!built.sql.contains("WHERE"));
+        assert_eq!(built.values.len(), 2);
+    }
+
+    #[test]
+    fn param_object_collects_param_names() {
+        let dsl: QueryBuilderDsl = serde_json::from_value(json!({
+            "table": "demo_item",
+            "rules": {
+                "combinator": "and",
+                "rules": [
+                    {"field": "status", "operator": "=", "valueSource": "param", "value": {"param": "status"}}
+                ]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(collect_params(&dsl), vec!["status".to_string()]);
     }
 
     #[test]

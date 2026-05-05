@@ -31,7 +31,9 @@ async fn main() -> anyhow::Result<()> {
     let metadata_url =
         std::env::var("DB_API_METADATA_URL").unwrap_or_else(|_| "sqlite://../data.db".to_string());
     let metadata_db = repository::init_repository(&metadata_url).await?;
-    let pool_manager = Arc::new(DbPoolManager::new());
+    let pool_manager = Arc::new(DbPoolManager::new(db::sqlite_base_dir_from_url(
+        &metadata_url,
+    )));
     let state = Arc::new(handler::AppState::new(metadata_db, pool_manager));
 
     let app = Router::new()

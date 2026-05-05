@@ -9,6 +9,26 @@ CREATE TABLE IF NOT EXISTS demo_items (
   updated_at TEXT
 );
 
+CREATE TRIGGER IF NOT EXISTS demo_items_insert_timestamps
+AFTER INSERT ON demo_items
+FOR EACH ROW
+WHEN NEW.created_at IS NULL OR NEW.updated_at IS NULL
+BEGIN
+  UPDATE demo_items
+  SET created_at = COALESCE(created_at, datetime('now', 'localtime')),
+      updated_at = COALESCE(updated_at, datetime('now', 'localtime'))
+  WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS demo_items_update_timestamp
+AFTER UPDATE OF name, status, note ON demo_items
+FOR EACH ROW
+BEGIN
+  UPDATE demo_items
+  SET updated_at = datetime('now', 'localtime')
+  WHERE id = NEW.id;
+END;
+
 INSERT OR IGNORE INTO api_group (id, name) VALUES ('demo_crud_group', 'Demo CRUD 示例');
 
 INSERT OR REPLACE INTO datasource (id, name, note, type, url, username, password, driver, table_sql, create_time, update_time)
@@ -38,15 +58,15 @@ DELETE FROM api_config WHERE id IN (
 INSERT INTO api_config (id, path, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param)
 VALUES
 ('demo_item_create', 'demo/items/create', '创建 Demo Item', 'POST name/status/note 创建记录', '[{"name":"name","type":"string"},{"name":"status","type":"string"},{"name":"note","type":"string"}]', 1, 'local_sqlite_demo', 0, 'demo_crud_group', NULL, NULL, datetime('now', 'localtime'), datetime('now', 'localtime'), 'application/x-www-form-urlencoded', 0, NULL),
-('demo_item_get', 'demo/items/get', '查询 Demo Item', '按 id 查询单条记录', '[{"name":"id","type":"number"}]', 1, 'local_sqlite_demo', 0, 'demo_crud_group', NULL, NULL, datetime('now', 'localtime'), datetime('now', 'localtime'), 'application/x-www-form-urlencoded', 0, NULL),
-('demo_item_update', 'demo/items/update', '更新 Demo Item', '按 id 更新 name/status/note', '[{"name":"id","type":"number"},{"name":"name","type":"string"},{"name":"status","type":"string"},{"name":"note","type":"string"}]', 1, 'local_sqlite_demo', 0, 'demo_crud_group', NULL, NULL, datetime('now', 'localtime'), datetime('now', 'localtime'), 'application/x-www-form-urlencoded', 0, NULL),
-('demo_item_delete', 'demo/items/delete', '删除 Demo Item', '按 id 删除记录', '[{"name":"id","type":"number"}]', 1, 'local_sqlite_demo', 0, 'demo_crud_group', NULL, NULL, datetime('now', 'localtime'), datetime('now', 'localtime'), 'application/x-www-form-urlencoded', 0, NULL),
+('demo_item_get', 'demo/items/get', '查询 Demo Item', '按 id 查询单条记录', '[{"name":"id","type":"bigint"}]', 1, 'local_sqlite_demo', 0, 'demo_crud_group', NULL, NULL, datetime('now', 'localtime'), datetime('now', 'localtime'), 'application/x-www-form-urlencoded', 0, NULL),
+('demo_item_update', 'demo/items/update', '更新 Demo Item', '按 id 更新 name/status/note', '[{"name":"id","type":"bigint"},{"name":"name","type":"string"},{"name":"status","type":"string"},{"name":"note","type":"string"}]', 1, 'local_sqlite_demo', 0, 'demo_crud_group', NULL, NULL, datetime('now', 'localtime'), datetime('now', 'localtime'), 'application/x-www-form-urlencoded', 0, NULL),
+('demo_item_delete', 'demo/items/delete', '删除 Demo Item', '按 id 删除记录', '[{"name":"id","type":"bigint"}]', 1, 'local_sqlite_demo', 0, 'demo_crud_group', NULL, NULL, datetime('now', 'localtime'), datetime('now', 'localtime'), 'application/x-www-form-urlencoded', 0, NULL),
 ('demo_item_list', 'demo/items/list', 'Demo Item 列表查询', '一个列表接口同时支持 keyword/status 过滤、limit/offset 分页，并返回 total', '[{"name":"keyword","type":"string"},{"name":"status","type":"string"},{"name":"limit","type":"number"},{"name":"offset","type":"number"}]', 1, 'local_sqlite_demo', 0, 'demo_crud_group', NULL, NULL, datetime('now', 'localtime'), datetime('now', 'localtime'), 'application/x-www-form-urlencoded', 0, NULL);
 
 INSERT INTO api_sql (api_id, sql_text, transform_plugin, transform_plugin_params)
 VALUES
-('demo_item_create', 'INSERT INTO demo_items (name, status, note, created_at) VALUES ($name, $status, $note, datetime(''now''))', NULL, NULL),
+('demo_item_create', 'INSERT INTO demo_items (name, status, note) VALUES ($name, $status, $note)', NULL, NULL),
 ('demo_item_get', 'SELECT id, name, status, note, created_at, updated_at FROM demo_items WHERE id = $id', NULL, 'resultType=object'),
-('demo_item_update', 'UPDATE demo_items SET name = $name, status = $status, note = $note, updated_at = datetime(''now'') WHERE id = $id', NULL, NULL),
+('demo_item_update', 'UPDATE demo_items SET name = $name, status = $status, note = $note WHERE id = $id', NULL, NULL),
 ('demo_item_delete', 'DELETE FROM demo_items WHERE id = $id', NULL, NULL),
 ('demo_item_list', 'SELECT id, name, status, note, created_at, updated_at, count(1) over() AS total FROM demo_items WHERE ($keyword = '''' OR name LIKE ''%'' || $keyword || ''%'' OR note LIKE ''%'' || $keyword || ''%'') AND ($status = '''' OR status = $status) ORDER BY id DESC LIMIT $limit OFFSET $offset', NULL, NULL);

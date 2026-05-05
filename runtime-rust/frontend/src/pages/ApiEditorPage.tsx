@@ -327,8 +327,8 @@ function parseResponseMode(raw?: string): QueryBuilderResponseMode {
 function inferParams(dsl: QueryBuilderDsl): ParamSpec[] {
   const params = new Map<string, ParamSpec>();
   collectRuleParams(dsl.rules, params);
-  if (dsl.limit?.param) params.set(dsl.limit.param, { name: dsl.limit.param, type: 'bigint' });
-  if (dsl.offset?.param) params.set(dsl.offset.param, { name: dsl.offset.param, type: 'bigint' });
+  if (dsl.limit?.param) params.set(dsl.limit.param, { name: dsl.limit.param, type: 'number' });
+  if (dsl.offset?.param) params.set(dsl.offset.param, { name: dsl.offset.param, type: 'number' });
   return [...params.values()];
 }
 

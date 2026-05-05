@@ -1,7 +1,13 @@
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
-import { Button, Empty, Input, Select, Table } from 'antd';
+import { Button, Empty, Input, Select, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { ParamSpec } from '../api/types';
+import {
+  findColumnParamOption,
+  firstUnusedColumnOption,
+  mergeParamOptions,
+  type ColumnParamOption,
+} from './sqlParamSchema';
 
 export const PARAM_TYPE_OPTIONS = [
   { value: 'string', label: 'string' },
@@ -19,6 +25,10 @@ interface ParamEditorProps {
   onChange?: (value: ParamSpec[]) => void;
   readonly?: boolean;
   lockNames?: boolean;
+  lockTypes?: boolean;
+  disableAdd?: boolean;
+  disableRemove?: boolean;
+  fieldOptions?: ColumnParamOption[];
   emptyText?: string;
 }
 
@@ -27,16 +37,29 @@ export default function ParamEditor({
   onChange,
   readonly = false,
   lockNames = false,
+  lockTypes = false,
+  disableAdd = false,
+  disableRemove = false,
+  fieldOptions,
   emptyText = '暂无参数',
 }: ParamEditorProps) {
   const rows = normalizeParams(value);
+  const schemaOptions = fieldOptions ? mergeParamOptions(rows, fieldOptions) : undefined;
 
   function update(index: number, patch: Partial<ParamSpec>) {
     onChange?.(rows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)));
   }
 
   function addRow() {
-    onChange?.([...rows, { name: '', type: 'string', note: '' }]);
+    const nextOption = schemaOptions ? firstUnusedColumnOption(schemaOptions, rows) : undefined;
+    onChange?.([
+      ...rows,
+      {
+        name: nextOption?.value ?? '',
+        type: nextOption?.type ?? 'string',
+        note: '',
+      },
+    ]);
   }
 
   function removeRow(index: number) {
@@ -48,28 +71,64 @@ export default function ParamEditor({
       title: '参数名',
       dataIndex: 'name',
       width: 260,
-      render: (name: string, _row, index) =>
-        readonly || lockNames ? (
-          <span className="param-name">{name || '-'}</span>
-        ) : (
-          <Input value={name} placeholder="如 id / status" onChange={(event) => update(index, { name: event.target.value })} />
-        ),
+      render: (name: string, _row, index) => {
+        if (readonly || lockNames) return <span className="param-name">{name || '-'}</span>;
+        if (!schemaOptions) {
+          return (
+            <Input
+              value={name}
+              placeholder="如 id / status"
+              onChange={(event) => update(index, { name: event.target.value })}
+            />
+          );
+        }
+        return (
+          <Select
+            showSearch
+            className="w-full"
+            value={name || undefined}
+            placeholder="选择表字段"
+            optionFilterProp="label"
+            options={schemaOptions.map((option) => ({
+              value: option.value,
+              label: option.label,
+              disabled: option.missing,
+            }))}
+            onChange={(nextName) => {
+              const option = findColumnParamOption(schemaOptions, nextName);
+              update(index, { name: nextName, type: option?.type ?? 'string' });
+            }}
+          />
+        );
+      },
     },
     {
       title: '类型',
       dataIndex: 'type',
       width: 220,
-      render: (type: string, _row, index) =>
-        readonly ? (
-          <span className="param-type-tag">{type || 'string'}</span>
-        ) : (
+      render: (type: string, row, index) => {
+        const option = schemaOptions ? findColumnParamOption(schemaOptions, row.name) : undefined;
+        if (readonly || lockTypes || schemaOptions) {
+          return (
+            <span className="param-type-tag">
+              {normalizeParamType(option?.type ?? type) || 'string'}
+              {option?.missing ? (
+                <Tag className="ml-2" color="warning">
+                  字段不存在
+                </Tag>
+              ) : null}
+            </span>
+          );
+        }
+        return (
           <Select
             className="w-full"
             value={normalizeParamType(type)}
             options={PARAM_TYPE_OPTIONS}
             onChange={(nextType) => update(index, { type: nextType })}
           />
-        ),
+        );
+      },
     },
     {
       title: '说明',
@@ -83,7 +142,7 @@ export default function ParamEditor({
     },
   ];
 
-  if (!readonly) {
+  if (!readonly && !disableRemove) {
     columns.push({
       title: '操作',
       width: 88,
@@ -103,7 +162,7 @@ export default function ParamEditor({
         dataSource={rows.map((row, index) => ({ ...row, key: `${row.name || 'param'}-${index}` }))}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyText} /> }}
       />
-      {!readonly ? (
+      {!readonly && !disableAdd ? (
         <Button className="param-add-button" icon={<PlusOutlined />} onClick={addRow}>
           添加参数
         </Button>

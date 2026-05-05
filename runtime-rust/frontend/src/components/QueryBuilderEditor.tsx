@@ -1,9 +1,10 @@
 import { MinusCircleOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
-import { Alert, Button, Card, Checkbox, Collapse, Form, Input, InputNumber, Select, Space, Typography } from 'antd';
+import { Alert, Button, Card, Checkbox, Form, Input, InputNumber, Select, Space, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import {
   QueryBuilder,
   ValueEditor,
+  defaultOperators,
   type Field,
   type FullOption,
   type RuleGroupType,
@@ -12,6 +13,7 @@ import {
 import { QueryBuilderAntD } from '@react-querybuilder/antd';
 import { tableService } from '../api/services';
 import type { QueryBuilderDsl, TableColumn } from '../api/types';
+import { queryBuilderDslToPreview, type PreviewFormat } from './queryBuilderPreview';
 
 const emptyRules: RuleGroupType = { combinator: 'and', rules: [] };
 const fallbackColumns: TableColumn[] = [
@@ -21,25 +23,12 @@ const fallbackColumns: TableColumn[] = [
   { name: 'note', type: 'string' },
 ];
 
-const operators: FullOption[] = [
-  { name: '=', value: '=', label: '等于' },
-  { name: '!=', value: '!=', label: '不等于' },
-  { name: '>', value: '>', label: '大于' },
-  { name: '>=', value: '>=', label: '大于等于' },
-  { name: '<', value: '<', label: '小于' },
-  { name: '<=', value: '<=', label: '小于等于' },
-  { name: 'contains', value: 'contains', label: '包含' },
-  { name: 'begins_with', value: 'begins_with', label: '开头是' },
-  { name: 'ends_with', value: 'ends_with', label: '结尾是' },
-  { name: 'in', value: 'in', label: '属于列表 in' },
-  { name: 'not_in', value: 'not_in', label: '不属于列表 not in' },
-  { name: 'null', value: 'null', label: '为空' },
-  { name: 'not_null', value: 'not_null', label: '不为空' },
-];
+const operators: FullOption[] = defaultOperators.filter((operator) => operator.name !== 'notBetween');
 
 const valueSources: FullOption[] = [
-  { name: 'value', value: 'value', label: '固定值' },
-  { name: 'param', value: 'param', label: '请求参数' },
+  { name: 'value', value: 'value', label: 'value' },
+  { name: 'field', value: 'field', label: 'field' },
+  { name: 'param', value: 'param', label: 'param' },
 ];
 
 export interface QueryBuilderEditorProps {
@@ -52,6 +41,7 @@ export default function QueryBuilderEditor({ value, datasourceId, onChange }: Qu
   const [tables, setTables] = useState<string[]>([]);
   const [columns, setColumns] = useState<TableColumn[]>(fallbackColumns);
   const [schemaError, setSchemaError] = useState<string>();
+  const [previewFormat, setPreviewFormat] = useState<PreviewFormat>('sql');
 
   const dsl = value ?? {
     type: 'queryBuilder',
@@ -103,6 +93,7 @@ export default function QueryBuilderEditor({ value, datasourceId, onChange }: Qu
       })),
     [effectiveColumns],
   );
+  const preview = useMemo(() => queryBuilderDslToPreview(dsl, previewFormat), [dsl, previewFormat]);
 
   function patch(next: Partial<QueryBuilderDsl>) {
     onChange({ ...dsl, ...next });
@@ -154,14 +145,8 @@ export default function QueryBuilderEditor({ value, datasourceId, onChange }: Qu
       <Card
         className="query-builder-card"
         title="过滤条件可视化编辑器"
-        extra={<Typography.Text type="secondary">字段来自真实 schema；值可绑定请求参数</Typography.Text>}
+        extra={<Typography.Text type="secondary">schema fields, value / field / param</Typography.Text>}
       >
-        <Alert
-          className="mb-4"
-          type="info"
-          showIcon
-          message="选择“固定值”会把值写入模板；选择“请求参数”会在运行时从请求体/query/form 中取值。"
-        />
         <QueryBuilderAntD>
           <QueryBuilder
             fields={fields}
@@ -169,6 +154,7 @@ export default function QueryBuilderEditor({ value, datasourceId, onChange }: Qu
             operators={operators}
             getValueSources={() => valueSources as never}
             getValueEditorType={() => 'text'}
+            listsAsArrays
             showCombinatorsBetweenRules={false}
             controlClassnames={{ queryBuilder: 'dbapi-query-builder' }}
             controlElements={{ valueEditor: DbApiValueEditor }}
@@ -242,27 +228,26 @@ export default function QueryBuilderEditor({ value, datasourceId, onChange }: Qu
         </Form.Item>
       </div>
 
-      <Collapse
-        items={[
-          {
-            key: 'preview',
-            label: '高级预览：生成的 DSL JSON / SQL 规则',
-            children: (
-              <div className="space-y-4">
-                <Form.Item label="DSL JSON 预览">
-                  <Input.TextArea rows={10} value={JSON.stringify(dsl, null, 2)} readOnly />
-                </Form.Item>
-              </div>
-            ),
-          },
-        ]}
-      />
+      <Form.Item label="Convert to">
+        <div className="space-y-3">
+          <Select
+            className="w-36"
+            value={previewFormat}
+            options={[
+              { value: 'sql', label: 'SQL' },
+              { value: 'json', label: 'JSON' },
+            ]}
+            onChange={setPreviewFormat}
+          />
+          <Input.TextArea className="query-builder-preview" rows={10} value={preview} readOnly />
+        </div>
+      </Form.Item>
     </div>
   );
 }
 
 function DbApiValueEditor(props: ValueEditorProps) {
-  if (['null', 'not_null'].includes(props.operator)) return null;
+  if (['null', 'notNull'].includes(props.operator)) return null;
   if (String(props.valueSource) === 'param') {
     const paramValue = normalizeParamValue(props.value);
     return (
@@ -285,7 +270,7 @@ function DbApiValueEditor(props: ValueEditorProps) {
       </Space.Compact>
     );
   }
-  if (['in', 'not_in'].includes(props.operator)) {
+  if (['in', 'notIn'].includes(props.operator)) {
     const value = Array.isArray(props.value) ? props.value.map(String) : splitList(String(props.value ?? ''));
     return <Select mode="tags" className="min-w-64" value={value} tokenSeparators={[',']} onChange={props.handleOnChange} />;
   }

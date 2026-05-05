@@ -3,9 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { apiConfigService, datasourceService, groupService, tableService } from '../api/services';
 import type { ApiConfig, ApiEngine, ApiGroup, DataSource, ParamSpec, QueryBuilderDsl, TableColumn } from '../api/types';
-import type { RuleGroupType, RuleType } from 'react-querybuilder';
 import ParamEditor, { parseParamSpecs, stringifyParamSpecs } from '../components/ParamEditor';
 import QueryBuilderEditor from '../components/QueryBuilderEditor';
+import { inferQueryBuilderPageParams, sanitizeQueryBuilderDsl } from '../components/queryBuilderPreview';
 import {
   columnParamOptions,
   hasFixedIdParamContract,
@@ -186,7 +186,7 @@ export default function ApiEditorPage() {
 
   async function save() {
     const values = await form.validateFields();
-    const queryBuilderDsl = sanitizeDsl(dsl);
+    const queryBuilderDsl = sanitizeQueryBuilderDsl(dsl);
     const sqlList =
       engine === 'queryBuilder'
         ? [
@@ -202,7 +202,7 @@ export default function ApiEditorPage() {
       id,
       params:
         engine === 'queryBuilder'
-          ? stringifyParamSpecs(inferParams(queryBuilderDsl))
+          ? stringifyParamSpecs(inferQueryBuilderPageParams(queryBuilderDsl))
           : contentType === 'application/json'
             ? '[]'
             : stringifyParamSpecs(params),
@@ -305,15 +305,15 @@ export default function ApiEditorPage() {
       </Card>
 
       <Card title="请求参数定义">
-        {contentType === 'application/json' ? (
+        {engine === 'queryBuilder' ? (
+          <ParamEditor value={inferQueryBuilderPageParams(sanitizeQueryBuilderDsl(dsl))} readonly emptyText="当前 QueryBuilder 没有分页参数" />
+        ) : contentType === 'application/json' ? (
           <Input.TextArea
             rows={8}
             value={jsonParam}
             placeholder='例如 {"id": 1, "status": "active"}'
             onChange={(event) => setJsonParam(event.target.value)}
           />
-        ) : engine === 'queryBuilder' ? (
-          <ParamEditor value={inferParams(sanitizeDsl(dsl))} readonly emptyText="当前 QueryBuilder 没有绑定请求参数" />
         ) : (
           <ParamEditor
             value={params}
@@ -340,62 +340,4 @@ function parseResponseMode(raw?: string): QueryBuilderResponseMode {
   const value = raw?.match(/result_?type=([^&]+)/i)?.[1]?.toLowerCase();
   if (value === 'object' || value === 'count' || value === 'list' || value === 'page') return value;
   return 'page';
-}
-
-function inferParams(dsl: QueryBuilderDsl): ParamSpec[] {
-  const params = new Map<string, ParamSpec>();
-  collectRuleParams(dsl.rules, params);
-  if (dsl.limit?.param) params.set(dsl.limit.param, { name: dsl.limit.param, type: 'number' });
-  if (dsl.offset?.param) params.set(dsl.offset.param, { name: dsl.offset.param, type: 'number' });
-  return [...params.values()];
-}
-
-function collectRuleParams(group: RuleGroupType, params: Map<string, ParamSpec>) {
-  for (const node of group.rules ?? []) {
-    if ('rules' in node) {
-      collectRuleParams(node as RuleGroupType, params);
-      continue;
-    }
-    const rule = node as RuleType & { valueSource?: string; value?: unknown };
-    if (String(rule.valueSource) !== 'param') continue;
-    const paramName = extractParamName(rule.value);
-    if (!paramName || params.has(paramName)) continue;
-    params.set(paramName, { name: paramName, type: inferParamType(rule.operator, rule.value) });
-  }
-}
-
-function extractParamName(value: unknown): string | undefined {
-  if (typeof value === 'string') return value.trim() || undefined;
-  if (value && typeof value === 'object' && 'param' in value) {
-    const param = (value as { param?: unknown }).param;
-    return typeof param === 'string' ? param.trim() || undefined : undefined;
-  }
-  return undefined;
-}
-
-function inferParamType(operator: string, value: unknown): ParamSpec['type'] {
-  if (['in', 'not_in'].includes(operator)) return 'Array<string>';
-  const defaultValue = value && typeof value === 'object' && 'default' in value ? (value as { default?: unknown }).default : undefined;
-  if (typeof defaultValue === 'number') return 'double';
-  if (Array.isArray(defaultValue)) return 'Array<string>';
-  return 'string';
-}
-
-function sanitizeDsl(dsl: QueryBuilderDsl): QueryBuilderDsl {
-  return { ...dsl, rules: sanitizeGroup(dsl.rules) };
-}
-
-function sanitizeGroup(group: RuleGroupType): RuleGroupType {
-  return {
-    ...group,
-    rules: (group.rules ?? []).map((node) => {
-      if ('rules' in node) return sanitizeGroup(node as RuleGroupType);
-      const rule = { ...(node as RuleType & { value?: unknown }) };
-      if (String(rule.valueSource) === 'param' && rule.value && typeof rule.value === 'object' && 'param' in rule.value) {
-        const value = rule.value as { param?: unknown; default?: unknown };
-        rule.value = value.default === undefined ? String(value.param ?? '') : { param: value.param, default: value.default };
-      }
-      return rule;
-    }),
-  };
 }

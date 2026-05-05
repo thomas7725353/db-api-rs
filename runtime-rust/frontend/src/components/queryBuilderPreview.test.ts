@@ -1,0 +1,124 @@
+import { describe, expect, it } from 'vitest';
+import type { RuleGroupType } from 'react-querybuilder';
+import type { QueryBuilderDsl } from '../api/types';
+import {
+  inferQueryBuilderPageParams,
+  queryBuilderDslToPreview,
+  sanitizeQueryBuilderDsl,
+} from './queryBuilderPreview';
+
+const rules = {
+  combinator: 'and',
+  rules: [
+    {
+      field: 'name',
+      operator: 'doesNotContain',
+      valueSource: 'param',
+      value: { param: 'keyword', default: 'draft', defaultText: '"draft"' },
+    },
+    {
+      field: 'created_at',
+      operator: 'between',
+      valueSource: 'param',
+      value: { param: 'createdRange', default: ['2026-01-01', '2026-01-31'] },
+    },
+    {
+      field: 'status',
+      operator: 'notIn',
+      valueSource: 'param',
+      value: { param: 'statuses', default: ['archived', 'deleted'] },
+    },
+    {
+      field: 'updated_at',
+      operator: '>=',
+      valueSource: 'field',
+      value: 'created_at',
+    },
+    {
+      field: 'ignored',
+      operator: '=',
+      valueSource: 'param',
+      value: { param: '   ' },
+    },
+  ],
+} as unknown as RuleGroupType;
+
+const dsl: QueryBuilderDsl = {
+  type: 'queryBuilder',
+  table: 'demo_items',
+  select: ['id', 'name', 'status', 'created_at'],
+  rules,
+  orderBy: [{ field: 'id', direction: 'desc' }],
+  limit: { param: 'limit', default: 20, max: 100 },
+  offset: { param: 'offset', default: 0 },
+  count: true,
+};
+
+describe('queryBuilderPreview', () => {
+  it('converts rules to SQL with readable params and native operators', () => {
+    const sql = queryBuilderDslToPreview(dsl, 'sql');
+
+    expect(sql).toContain('$keyword');
+    expect(sql).toContain('$createdRange');
+    expect(sql).toContain('$statuses');
+    expect(sql).toContain('between');
+    expect(sql).toContain('not in');
+    expect(sql).toContain('not like');
+    expect(sql).toContain('updated_at >= created_at');
+    expect(sql).not.toContain('[object Object]');
+    expect(sql).not.toContain('$   ');
+    expect(sql).not.toContain('ignored');
+  });
+
+  it('converts rules to sanitized full DSL JSON', () => {
+    const preview = queryBuilderDslToPreview(dsl, 'json');
+    const parsed = JSON.parse(preview) as QueryBuilderDsl;
+
+    expect(parsed).toEqual({
+      ...dsl,
+      rules: {
+        ...rules,
+        rules: [
+          {
+            field: 'name',
+            operator: 'doesNotContain',
+            valueSource: 'param',
+            value: { param: 'keyword', default: 'draft' },
+          },
+          {
+            field: 'created_at',
+            operator: 'between',
+            valueSource: 'param',
+            value: { param: 'createdRange', default: ['2026-01-01', '2026-01-31'] },
+          },
+          {
+            field: 'status',
+            operator: 'notIn',
+            valueSource: 'param',
+            value: { param: 'statuses', default: ['archived', 'deleted'] },
+          },
+          {
+            field: 'updated_at',
+            operator: '>=',
+            valueSource: 'field',
+            value: 'created_at',
+          },
+          {
+            field: 'ignored',
+            operator: '=',
+            valueSource: 'param',
+            value: '',
+          },
+        ],
+      },
+    });
+    expect(sanitizeQueryBuilderDsl(dsl).limit).toEqual({ param: 'limit', default: 20, max: 100 });
+  });
+
+  it('infers only pagination params as bigint', () => {
+    expect(inferQueryBuilderPageParams(dsl)).toEqual([
+      { name: 'limit', type: 'bigint' },
+      { name: 'offset', type: 'bigint' },
+    ]);
+  });
+});

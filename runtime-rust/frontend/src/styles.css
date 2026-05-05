@@ -157,6 +157,11 @@ body {
   min-width: 34px;
 }
 
+.query-builder-preview textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-size: 12px;
+}
+
 .param-editor .ant-table {
   border: 1px solid #e7edf4;
   border-radius: 8px;

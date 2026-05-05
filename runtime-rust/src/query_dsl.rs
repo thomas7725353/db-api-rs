@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow};
 use sea_orm::DbBackend;
 use sea_query::{
-    Alias, Asterisk, Cond, Expr, Func, MysqlQueryBuilder, Order, PostgresQueryBuilder, Query,
-    SelectStatement, SqliteQueryBuilder, Value, Values,
+    Alias, Asterisk, BinOper, Cond, Expr, Func, MysqlQueryBuilder, Order, PostgresQueryBuilder,
+    Query, SelectStatement, SimpleExpr, SqliteQueryBuilder, Value, Values,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
@@ -129,7 +129,7 @@ pub fn build_query(
     }
     query.from(Alias::new(&dsl.table));
 
-    let condition = build_group(&dsl.rules, input)?;
+    let condition = build_group(&dsl.rules, input, backend)?;
     if !condition.is_empty() {
         query.cond_where(condition.clone());
     }
@@ -211,7 +211,7 @@ fn build_select(query: SelectStatement, backend: DbBackend) -> (String, sea_quer
     }
 }
 
-fn build_group(group: &RuleGroup, input: &JsonValue) -> Result<Cond> {
+fn build_group(group: &RuleGroup, input: &JsonValue, backend: DbBackend) -> Result<Cond> {
     let mut condition = match group.combinator.to_ascii_lowercase().as_str() {
         "or" => Cond::any(),
         "and" | "" => Cond::all(),
@@ -221,13 +221,13 @@ fn build_group(group: &RuleGroup, input: &JsonValue) -> Result<Cond> {
     for node in &group.rules {
         match node {
             RuleNode::Group(group) => {
-                let nested = build_group(group, input)?;
+                let nested = build_group(group, input, backend)?;
                 if !nested.is_empty() {
                     condition = condition.add(nested);
                 }
             }
             RuleNode::Rule(rule) => {
-                if let Some(expr) = build_rule(rule, input)? {
+                if let Some(expr) = build_rule(rule, input, backend)? {
                     condition = condition.add(expr);
                 }
             }
@@ -237,16 +237,15 @@ fn build_group(group: &RuleGroup, input: &JsonValue) -> Result<Cond> {
     Ok(condition)
 }
 
-fn build_rule(rule: &Rule, input: &JsonValue) -> Result<Option<sea_query::SimpleExpr>> {
+fn build_rule(rule: &Rule, input: &JsonValue, backend: DbBackend) -> Result<Option<SimpleExpr>> {
     validate_identifier(&rule.field, "where field")?;
     let op = normalize_operator(&rule.operator);
-    let column = Expr::col(Alias::new(&rule.field));
 
     if op == "null" || op == "is_null" {
-        return Ok(Some(column.is_null()));
+        return Ok(Some(Expr::col(Alias::new(&rule.field)).is_null()));
     }
-    if op == "not_null" || op == "is_not_null" {
-        return Ok(Some(column.is_null().not()));
+    if op == "not_null" || op == "notnull" || op == "is_not_null" {
+        return Ok(Some(Expr::col(Alias::new(&rule.field)).is_not_null()));
     }
 
     let resolved = resolve_value(rule, input)?;
@@ -254,19 +253,76 @@ fn build_rule(rule: &Rule, input: &JsonValue) -> Result<Option<sea_query::Simple
         return Ok(None);
     }
     let value = resolved.value.unwrap_or(JsonValue::Null);
+    let value_is_field = value_source_is(rule, "field");
+    let column = || Expr::col(Alias::new(&rule.field));
 
     let expr = match op.as_str() {
-        "=" | "==" => column.eq(db::json_to_db_value(value)),
-        "!=" | "<>" => column.ne(db::json_to_db_value(value)),
-        ">" => column.gt(db::json_to_db_value(value)),
-        ">=" => column.gte(db::json_to_db_value(value)),
-        "<" => column.lt(db::json_to_db_value(value)),
-        "<=" => column.lte(db::json_to_db_value(value)),
-        "contains" | "like" => column.like(like_value(value, LikeMode::Contains)?),
-        "begins_with" | "beginswith" => column.like(like_value(value, LikeMode::BeginsWith)?),
-        "ends_with" | "endswith" => column.like(like_value(value, LikeMode::EndsWith)?),
-        "in" => column.is_in(json_array_values(value, "in")?),
-        "not_in" | "notin" => column.is_in(json_array_values(value, "notIn")?).not(),
+        "=" | "==" => column().eq(value_operand(value, value_is_field)?),
+        "!=" | "<>" => column().ne(value_operand(value, value_is_field)?),
+        ">" => column().gt(value_operand(value, value_is_field)?),
+        ">=" => column().gte(value_operand(value, value_is_field)?),
+        "<" => column().lt(value_operand(value, value_is_field)?),
+        "<=" => column().lte(value_operand(value, value_is_field)?),
+        "contains" | "like" => like_expr(
+            column(),
+            value,
+            value_is_field,
+            LikeMode::Contains,
+            false,
+            backend,
+        )?,
+        "begins_with" | "beginswith" => like_expr(
+            column(),
+            value,
+            value_is_field,
+            LikeMode::BeginsWith,
+            false,
+            backend,
+        )?,
+        "ends_with" | "endswith" => like_expr(
+            column(),
+            value,
+            value_is_field,
+            LikeMode::EndsWith,
+            false,
+            backend,
+        )?,
+        "does_not_contain" | "doesnotcontain" => like_expr(
+            column(),
+            value,
+            value_is_field,
+            LikeMode::Contains,
+            true,
+            backend,
+        )?,
+        "does_not_begin_with" | "doesnotbeginwith" => like_expr(
+            column(),
+            value,
+            value_is_field,
+            LikeMode::BeginsWith,
+            true,
+            backend,
+        )?,
+        "does_not_end_with" | "doesnotendwith" => like_expr(
+            column(),
+            value,
+            value_is_field,
+            LikeMode::EndsWith,
+            true,
+            backend,
+        )?,
+        "in" => column().is_in(value_list_operands(value, value_is_field, "in")?),
+        "not_in" | "notin" => column()
+            .is_in(value_list_operands(value, value_is_field, "notIn")?)
+            .not(),
+        "between" => {
+            let (lower, upper) = between_operands(value, value_is_field, "between")?;
+            column().between(lower, upper)
+        }
+        "not_between" | "notbetween" => {
+            let (lower, upper) = between_operands(value, value_is_field, "notBetween")?;
+            column().not_between(lower, upper)
+        }
         other => return Err(anyhow!("Unsupported operator: {}", other)),
     };
     Ok(Some(expr))
@@ -279,7 +335,7 @@ struct ResolvedValue {
 }
 
 fn resolve_value(rule: &Rule, input: &JsonValue) -> Result<ResolvedValue> {
-    if rule.value_source.as_deref() == Some("param") {
+    if value_source_is(rule, "param") {
         let binding = param_binding(rule)?;
         if let Some(value) = input.get(&binding.param) {
             return Ok(ResolvedValue {
@@ -303,6 +359,12 @@ fn resolve_value(rule: &Rule, input: &JsonValue) -> Result<ResolvedValue> {
         missing: false,
         value: Some(rule.value.clone()),
     })
+}
+
+fn value_source_is(rule: &Rule, expected: &str) -> bool {
+    rule.value_source
+        .as_deref()
+        .is_some_and(|source| source.eq_ignore_ascii_case(expected))
 }
 
 #[derive(Debug)]
@@ -353,7 +415,63 @@ fn should_skip(value: &ResolvedValue, skip_when: &[SkipWhen]) -> bool {
     })
 }
 
+fn value_operand(value: JsonValue, value_is_field: bool) -> Result<SimpleExpr> {
+    if value_is_field {
+        return field_operand(value);
+    }
+    Ok(db::json_to_db_value(value).into())
+}
+
+fn value_list_operands(
+    value: JsonValue,
+    value_is_field: bool,
+    op: &str,
+) -> Result<Vec<SimpleExpr>> {
+    if value_is_field {
+        return list_values(value, op)?
+            .into_iter()
+            .map(field_operand)
+            .collect();
+    }
+    Ok(json_array_values(value, op)?
+        .into_iter()
+        .map(Into::into)
+        .collect())
+}
+
+fn between_operands(
+    value: JsonValue,
+    value_is_field: bool,
+    op: &str,
+) -> Result<(SimpleExpr, SimpleExpr)> {
+    let mut values = list_values(value, op)?;
+    if values.len() != 2 {
+        return Err(anyhow!("{} operator requires exactly two values", op));
+    }
+    let upper = values.pop().expect("len checked");
+    let lower = values.pop().expect("len checked");
+    Ok((
+        value_operand(lower, value_is_field)?,
+        value_operand(upper, value_is_field)?,
+    ))
+}
+
+fn field_operand(value: JsonValue) -> Result<SimpleExpr> {
+    let Some(field) = value.as_str() else {
+        return Err(anyhow!("field value must be a string identifier"));
+    };
+    validate_identifier(field, "field value")?;
+    Ok(Expr::col(Alias::new(field)).into())
+}
+
 fn json_array_values(value: JsonValue, op: &str) -> Result<Vec<Value>> {
+    Ok(list_values(value, op)?
+        .into_iter()
+        .map(db::json_to_db_value)
+        .collect())
+}
+
+fn list_values(value: JsonValue, op: &str) -> Result<Vec<JsonValue>> {
     let values = match value {
         JsonValue::Array(values) => values,
         JsonValue::String(raw) => raw
@@ -363,15 +481,60 @@ fn json_array_values(value: JsonValue, op: &str) -> Result<Vec<Value>> {
             .collect(),
         other => {
             return Err(anyhow!(
-                "{} operator requires an array value, got {}",
+                "{} operator requires an array value or comma-separated string, got {}",
                 op,
                 other
             ));
         }
     };
-    Ok(values.into_iter().map(db::json_to_db_value).collect())
+    Ok(values)
 }
 
+fn like_expr(
+    column: Expr,
+    value: JsonValue,
+    value_is_field: bool,
+    mode: LikeMode,
+    negated: bool,
+    backend: DbBackend,
+) -> Result<SimpleExpr> {
+    if value_is_field {
+        let pattern = field_like_pattern(value, mode, backend)?;
+        let op = if negated {
+            BinOper::NotLike
+        } else {
+            BinOper::Like
+        };
+        return Ok(column.binary(op, pattern));
+    }
+    let pattern = like_value(value, mode)?;
+    Ok(if negated {
+        column.not_like(pattern)
+    } else {
+        column.like(pattern)
+    })
+}
+
+fn field_like_pattern(value: JsonValue, mode: LikeMode, backend: DbBackend) -> Result<SimpleExpr> {
+    let field = field_operand(value)?;
+    Ok(match (backend, mode) {
+        (DbBackend::MySql, LikeMode::Contains) => {
+            Expr::cust_with_expr("CONCAT('%', ?, '%')", field)
+        }
+        (DbBackend::MySql, LikeMode::BeginsWith) => Expr::cust_with_expr("CONCAT(?, '%')", field),
+        (DbBackend::MySql, LikeMode::EndsWith) => Expr::cust_with_expr("CONCAT('%', ?)", field),
+        (DbBackend::Postgres, LikeMode::Contains) => {
+            Expr::cust_with_expr("('%' || $1 || '%')", field)
+        }
+        (DbBackend::Postgres, LikeMode::BeginsWith) => Expr::cust_with_expr("($1 || '%')", field),
+        (DbBackend::Postgres, LikeMode::EndsWith) => Expr::cust_with_expr("('%' || $1)", field),
+        (DbBackend::Sqlite, LikeMode::Contains) => Expr::cust_with_expr("('%' || ? || '%')", field),
+        (DbBackend::Sqlite, LikeMode::BeginsWith) => Expr::cust_with_expr("(? || '%')", field),
+        (DbBackend::Sqlite, LikeMode::EndsWith) => Expr::cust_with_expr("('%' || ?)", field),
+    })
+}
+
+#[derive(Clone, Copy)]
 enum LikeMode {
     Contains,
     BeginsWith,
@@ -452,7 +615,7 @@ fn collect_group_params(group: &RuleGroup, params: &mut Vec<String>) {
         match node {
             RuleNode::Group(group) => collect_group_params(group, params),
             RuleNode::Rule(rule) => {
-                if rule.value_source.as_deref() == Some("param")
+                if value_source_is(rule, "param")
                     && let Ok(binding) = param_binding(rule)
                     && !params.iter().any(|item| item == &binding.param)
                 {
@@ -635,6 +798,144 @@ mod tests {
         .unwrap();
 
         assert_eq!(collect_params(&dsl), vec!["status".to_string()]);
+    }
+
+    #[test]
+    fn supports_native_does_not_like_operators() {
+        let dsl: QueryBuilderDsl = serde_json::from_value(json!({
+            "table": "demo_item",
+            "select": ["id"],
+            "rules": {
+                "combinator": "and",
+                "rules": [
+                    {"field": "name", "operator": "doesNotContain", "value": "archived"},
+                    {"field": "code", "operator": "doesNotBeginWith", "value": "tmp"},
+                    {"field": "suffix", "operator": "doesNotEndWith", "value": "old"}
+                ]
+            }
+        }))
+        .unwrap();
+
+        let built = build_query(&dsl, &json!({}), DbBackend::Sqlite).unwrap();
+
+        assert_eq!(built.sql.matches("NOT LIKE").count(), 3);
+        assert_eq!(built.values.len(), 5);
+        assert_eq!(db_value_to_json(&built.values[0]), json!("%archived%"));
+        assert_eq!(db_value_to_json(&built.values[1]), json!("tmp%"));
+        assert_eq!(db_value_to_json(&built.values[2]), json!("%old"));
+    }
+
+    #[test]
+    fn supports_between_and_not_between_native_operators() {
+        let dsl: QueryBuilderDsl = serde_json::from_value(json!({
+            "table": "demo_item",
+            "select": ["id"],
+            "rules": {
+                "combinator": "and",
+                "rules": [
+                    {"field": "age", "operator": "between", "value": [18, 65]},
+                    {"field": "score", "operator": "notBetween", "value": "10,20"}
+                ]
+            }
+        }))
+        .unwrap();
+
+        let built = build_query(&dsl, &json!({}), DbBackend::Sqlite).unwrap();
+
+        assert!(built.sql.contains("\"age\" BETWEEN"));
+        assert!(built.sql.contains("\"score\" NOT BETWEEN"));
+        assert_eq!(built.values.len(), 6);
+        assert_eq!(db_value_to_json(&built.values[0]), json!(18));
+        assert_eq!(db_value_to_json(&built.values[1]), json!(65));
+        assert_eq!(db_value_to_json(&built.values[2]), json!("10"));
+        assert_eq!(db_value_to_json(&built.values[3]), json!("20"));
+    }
+
+    #[test]
+    fn between_requires_two_values() {
+        let dsl: QueryBuilderDsl = serde_json::from_value(json!({
+            "table": "demo_item",
+            "select": ["id"],
+            "rules": {
+                "combinator": "and",
+                "rules": [
+                    {"field": "age", "operator": "between", "value": [18]}
+                ]
+            }
+        }))
+        .unwrap();
+
+        let err = build_query(&dsl, &json!({}), DbBackend::Sqlite).unwrap_err();
+
+        assert!(err.to_string().contains("requires exactly two values"));
+    }
+
+    #[test]
+    fn supports_native_not_null_operator() {
+        let dsl: QueryBuilderDsl = serde_json::from_value(json!({
+            "table": "demo_item",
+            "select": ["id"],
+            "rules": {
+                "combinator": "and",
+                "rules": [
+                    {"field": "deleted_at", "operator": "notNull"}
+                ]
+            }
+        }))
+        .unwrap();
+
+        let built = build_query(&dsl, &json!({}), DbBackend::Sqlite).unwrap();
+
+        assert!(built.sql.contains("\"deleted_at\" IS NOT NULL"));
+        assert_eq!(built.values.len(), 2);
+    }
+
+    #[test]
+    fn supports_field_to_field_comparisons() {
+        let dsl: QueryBuilderDsl = serde_json::from_value(json!({
+            "table": "demo_item",
+            "select": ["id"],
+            "rules": {
+                "combinator": "and",
+                "rules": [
+                    {"field": "updated_at", "operator": ">=", "valueSource": "field", "value": "created_at"},
+                    {"field": "score", "operator": "between", "valueSource": "field", "value": ["min_score", "max_score"]},
+                    {"field": "name", "operator": "doesNotContain", "valueSource": "field", "value": "blocked_pattern"}
+                ]
+            }
+        }))
+        .unwrap();
+
+        let built = build_query(&dsl, &json!({}), DbBackend::Sqlite).unwrap();
+
+        assert!(built.sql.contains("\"updated_at\" >= \"created_at\""));
+        assert!(
+            built
+                .sql
+                .contains("\"score\" BETWEEN \"min_score\" AND \"max_score\"")
+        );
+        assert!(built.sql.contains("\"name\" NOT LIKE"));
+        assert!(built.sql.contains("\"blocked_pattern\""));
+        assert_eq!(built.values.len(), 2);
+    }
+
+    #[test]
+    fn rejects_invalid_field_value_source_identifier() {
+        let dsl: QueryBuilderDsl = serde_json::from_value(json!({
+            "table": "demo_item",
+            "select": ["id"],
+            "rules": {
+                "combinator": "and",
+                "rules": [
+                    {"field": "updated_at", "operator": "=", "valueSource": "field", "value": "created_at;drop"}
+                ]
+            }
+        }))
+        .unwrap();
+
+        let err = build_query(&dsl, &json!({}), DbBackend::Sqlite).unwrap_err();
+
+        assert!(err.to_string().contains("Invalid field value"));
     }
 
     #[test]

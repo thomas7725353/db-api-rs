@@ -1,5 +1,5 @@
 import { Alert, App, Button, Card, Form, Input, Radio, Select, Space, Tabs, Typography } from 'antd';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { apiConfigService, datasourceService, groupService, tableService } from '../api/services';
 import type { ApiConfig, ApiEngine, ApiGroup, DataSource, ParamSpec, QueryBuilderDsl, TableColumn } from '../api/types';
@@ -86,17 +86,23 @@ export default function ApiEditorPage() {
   }, [form, id]);
 
   useEffect(() => {
+    let ignore = false;
     setSqlTables([]);
     setSqlColumns([]);
     setSqlSchemaError(undefined);
-    if (!selectedDatasourceId || engine !== 'sql') return;
+    if (!selectedDatasourceId || engine !== 'sql') return () => { ignore = true; };
     void tableService
       .tables(selectedDatasourceId)
       .then((items) => {
+        if (ignore) return;
         setSqlTables(items);
         setSqlSchemaError(undefined);
       })
-      .catch((error: Error) => setSqlSchemaError(error.message));
+      .catch((error: Error) => {
+        if (ignore) return;
+        setSqlSchemaError(error.message);
+      });
+    return () => { ignore = true; };
   }, [engine, selectedDatasourceId]);
 
   useEffect(() => {
@@ -106,17 +112,23 @@ export default function ApiEditorPage() {
   }, [engine, sqlTable, sqlText]);
 
   useEffect(() => {
+    let ignore = false;
     setSqlColumns([]);
     setSqlSchemaError(undefined);
-    if (!selectedDatasourceId || engine !== 'sql' || !sqlTable) return;
+    if (!selectedDatasourceId || engine !== 'sql' || !sqlTable) return () => { ignore = true; };
     void tableService
       .columns(selectedDatasourceId, sqlTable)
       .then((items) => {
+        if (ignore) return;
         setSqlColumns(items);
         setParams((current) => syncParamTypesFromColumns(current, items));
         setSqlSchemaError(undefined);
       })
-      .catch((error: Error) => setSqlSchemaError(error.message));
+      .catch((error: Error) => {
+        if (ignore) return;
+        setSqlSchemaError(error.message);
+      });
+    return () => { ignore = true; };
   }, [engine, selectedDatasourceId, sqlTable]);
 
   const datasourceOptions = useMemo(
@@ -131,6 +143,12 @@ export default function ApiEditorPage() {
 
   const sqlFieldOptions = useMemo(() => columnParamOptions(sqlColumns), [sqlColumns]);
   const fixedSqlParams = useMemo(() => hasFixedIdParamContract(sqlText, params), [params, sqlText]);
+
+  const updateSqlText = useCallback((nextSqlText: string) => {
+    setSqlText(nextSqlText);
+    const inferredTable = inferSqlTableName(nextSqlText);
+    if (inferredTable && inferredTable !== sqlTable) setSqlTable(inferredTable);
+  }, [sqlTable]);
 
   const editorTabs = useMemo(() => {
     const queryBuilderTab = {
@@ -157,14 +175,14 @@ export default function ApiEditorPage() {
           <Input.TextArea
             rows={16}
             value={sqlText}
-            onChange={(event) => setSqlText(event.target.value)}
+            onChange={(event) => updateSqlText(event.target.value)}
           />
         </div>
       ),
     };
     if (!isEdit) return [queryBuilderTab, sqlTab];
     return engine === 'queryBuilder' ? [queryBuilderTab] : [sqlTab];
-  }, [dsl, engine, isEdit, selectedDatasourceId, sqlSchemaError, sqlTable, sqlTables, sqlText]);
+  }, [dsl, engine, isEdit, selectedDatasourceId, sqlSchemaError, sqlTable, sqlTables, sqlText, updateSqlText]);
 
   async function save() {
     const values = await form.validateFields();

@@ -58,6 +58,12 @@ describe('queryBuilderPreview', () => {
   it('converts rules to SQL with readable params and native operators', () => {
     const sql = queryBuilderDslToPreview(dsl, 'sql');
 
+    expect(sql).toContain('select id, name, status, created_at');
+    expect(sql).toContain('from demo_items');
+    expect(sql).toContain('order by id desc');
+    expect(sql).toContain('limit $limit');
+    expect(sql).toContain('offset $offset');
+    expect(sql).toContain('select count(*) as total');
     expect(sql).toContain('$keyword');
     expect(sql).toContain('$createdRange');
     expect(sql).toContain('$statuses');
@@ -65,9 +71,45 @@ describe('queryBuilderPreview', () => {
     expect(sql).toContain('not in');
     expect(sql).toContain('not like');
     expect(sql).toContain('updated_at >= created_at');
+    expect(sql).not.toContain("'$keyword'");
+    expect(sql).not.toContain("'$status'");
     expect(sql).not.toContain('[object Object]');
     expect(sql).not.toContain('$   ');
     expect(sql).not.toContain('ignored');
+  });
+
+  it('keeps simple param placeholders unquoted in full SQL preview', () => {
+    const previewDsl: QueryBuilderDsl = {
+      ...dsl,
+      select: ['id', 'name', 'status', 'note', 'created_at', 'updated_at'],
+      rules: {
+        combinator: 'and',
+        rules: [
+          {
+            field: 'name',
+            operator: 'contains',
+            valueSource: 'param',
+            value: 'keyword',
+            skipWhen: ['missing', 'empty_string'],
+          },
+          {
+            field: 'status',
+            operator: '=',
+            valueSource: 'param',
+            value: { param: 'status', default: 12 },
+            skipWhen: ['missing', 'empty_string'],
+          },
+        ],
+      } as unknown as RuleGroupType,
+    };
+
+    const sql = queryBuilderDslToPreview(previewDsl, 'sql');
+
+    expect(sql).toContain("name like '%' || $keyword || '%'");
+    expect(sql).toContain('status = $status');
+    expect(sql).toContain('limit $limit');
+    expect(sql).toContain('offset $offset');
+    expect(sql).not.toContain("'$status'");
   });
 
   it('converts rules to sanitized full DSL JSON', () => {

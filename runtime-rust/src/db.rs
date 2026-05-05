@@ -58,6 +58,7 @@ pub async fn connect_metadata(url: &str) -> Result<DbConn> {
     connect_url(url).await
 }
 
+#[allow(dead_code)]
 pub async fn connect_data_source(ds: &DataSource) -> Result<DbConn> {
     connect_data_source_with_base(ds, None).await
 }
@@ -87,6 +88,7 @@ async fn connect_url(url: &str) -> Result<DbConn> {
     Ok(DbConn { conn, backend })
 }
 
+#[allow(dead_code)]
 pub fn normalize_url(
     db_type: &str,
     url: &str,
@@ -154,7 +156,7 @@ fn sqlite_url_from_path_with_query(
 fn split_sqlite_path_query<'a>(raw_path: &'a str, default_query: &'a str) -> (&'a str, &'a str) {
     raw_path
         .split_once('?')
-        .map(|(path, query)| (path, &raw_path[path.len()..]))
+        .map(|(path, _query)| (path, &raw_path[path.len()..]))
         .unwrap_or((raw_path, default_query))
 }
 

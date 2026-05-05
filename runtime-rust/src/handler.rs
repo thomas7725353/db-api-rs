@@ -1,6 +1,6 @@
 use crate::db::{self, DbConn, DbPoolManager};
 use crate::form::{map_to_json, merge_json_objects, parse_request_body};
-use crate::model::ApiConfig;
+use crate::model::{ApiConfig, ApiSql};
 use crate::query_dsl::{self, QueryBuilderDsl};
 use crate::repository;
 use crate::response::api_error;
@@ -332,9 +332,7 @@ pub async fn handle_api(
     // 6. Execute SQL
     let is_query = SqlTransformer::is_query(sql, dialect).unwrap_or(false);
     if is_query {
-        let query_result = if is_single_row_response(
-            first_sql.and_then(|sql| sql.transform_plugin_params.as_deref()),
-        ) {
+        let query_result = if should_return_single_row(&config, first_sql) {
             db::query_one_json(&data_db, &transformed_sql, db_values)
                 .await
                 .map(|row| row.unwrap_or(JsonValue::Null))
@@ -460,6 +458,25 @@ fn is_single_row_response(params: Option<&str>) -> bool {
                 .map(|value| value.to_ascii_lowercase())
         })
         .is_some_and(|value| matches!(value.as_str(), "object" | "one" | "single"))
+}
+
+fn should_return_single_row(config: &ApiConfig, first_sql: Option<&ApiSql>) -> bool {
+    if is_single_row_response(first_sql.and_then(|sql| sql.transform_plugin_params.as_deref())) {
+        return true;
+    }
+
+    let path = config.path.as_deref().unwrap_or("").trim_matches('/');
+    path.ends_with("/get") && has_only_id_param(config.params.as_deref())
+}
+
+fn has_only_id_param(params_schema: Option<&str>) -> bool {
+    let Some(raw) = params_schema.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return false;
+    };
+    let Ok(params) = serde_json::from_str::<Vec<ParamSpec>>(raw) else {
+        return false;
+    };
+    params.len() == 1 && params[0].name.eq_ignore_ascii_case("id")
 }
 
 async fn execute_query_builder(
@@ -706,7 +723,8 @@ fn parse_param_types(params_schema: Option<&str>) -> Result<HashMap<String, Stri
         };
         let normalized = param_type.to_lowercase();
         match normalized.as_str() {
-            "number" | "string" | "date" => {
+            "number" | "bigint" | "double" | "string" | "date" | "array<string>"
+            | "array<bigint>" | "array<double>" | "array<date>" => {
                 param_types.insert(spec.name, normalized);
             }
             _ => return Err(anyhow!("Unsupported parameter type: {}", param_type)),
@@ -717,12 +735,38 @@ fn parse_param_types(params_schema: Option<&str>) -> Result<HashMap<String, Stri
 
 fn coerce_value(name: &str, value: JsonValue, param_type: Option<&str>) -> Result<Value> {
     match param_type {
-        Some("number") => coerce_number(name, value),
+        Some("bigint") => coerce_integer(name, value),
+        Some("number") | Some("double") => coerce_number(name, value),
         Some("string") | Some("date") => match value {
             JsonValue::String(s) => Ok(db::json_to_db_value(JsonValue::String(s))),
             other => Ok(db::json_to_db_value(JsonValue::String(other.to_string()))),
         },
+        Some(param_type) if param_type.starts_with("array<") => Ok(db::json_to_db_value(value)),
         _ => Ok(db::json_to_db_value(value)),
+    }
+}
+
+fn coerce_integer(name: &str, value: JsonValue) -> Result<Value> {
+    match value {
+        JsonValue::Number(number) if number.is_i64() => {
+            Ok(db::json_to_db_value(json!(number.as_i64().unwrap())))
+        }
+        JsonValue::Number(number) if number.is_u64() => {
+            let Some(raw) = number.as_u64() else {
+                return Err(anyhow!("Parameter {} must be an integer", name));
+            };
+            let value = i64::try_from(raw)
+                .map_err(|_| anyhow!("Parameter {} is out of integer range", name))?;
+            Ok(db::json_to_db_value(json!(value)))
+        }
+        JsonValue::String(raw) => {
+            let trimmed = raw.trim();
+            let value = trimmed
+                .parse::<i64>()
+                .map_err(|_| anyhow!("Parameter {} must be an integer", name))?;
+            Ok(db::json_to_db_value(json!(value)))
+        }
+        _ => Err(anyhow!("Parameter {} must be an integer", name)),
     }
 }
 
@@ -768,5 +812,32 @@ mod tests {
         assert!(!is_single_row_response(Some("")));
         assert!(!is_single_row_response(Some("resultType=list")));
         assert!(!is_single_row_response(Some(r#"{"resultType":"list"}"#)));
+    }
+
+    #[test]
+    fn get_path_with_only_id_param_defaults_to_single_row_response() {
+        let config = ApiConfig {
+            id: Some("demo_item_get".to_string()),
+            name: None,
+            note: None,
+            path: Some("demo/items/get".to_string()),
+            datasource_id: None,
+            sql_list: vec![],
+            params: Some(r#"[{"name":"id","type":"bigint"}]"#.to_string()),
+            status: None,
+            previlege: None,
+            group_id: None,
+            cache_plugin: None,
+            cache_plugin_params: None,
+            create_time: None,
+            update_time: None,
+            content_type: None,
+            open_trans: None,
+            json_param: None,
+            alarm_plugin: None,
+            alarm_plugin_param: None,
+        };
+
+        assert!(should_return_single_row(&config, None));
     }
 }

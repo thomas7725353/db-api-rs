@@ -3,8 +3,9 @@ import {
   BarChartOutlined,
   DatabaseOutlined,
   KeyOutlined,
+  LogoutOutlined,
 } from '@ant-design/icons';
-import { Layout, Menu, Tag, Typography } from 'antd';
+import { Button, Layout, Menu, Tag, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { systemService } from '../api/services';
@@ -31,6 +32,12 @@ export default function AppLayout() {
     return '/apis';
   }, [location.pathname]);
 
+  function logout() {
+    localStorage.removeItem('token');
+    sessionStorage.clear();
+    navigate('/apis');
+  }
+
   return (
     <Layout className="min-h-screen">
       <Header className="app-header">
@@ -53,9 +60,14 @@ export default function AppLayout() {
             { key: '/monitor', icon: <BarChartOutlined />, label: '监控' },
           ]}
         />
-        <Tag color="green" className="app-mode-tag">
-          {mode}
-        </Tag>
+        <div className="app-header-actions">
+          <Tag color="green" className="app-mode-tag">
+            {mode}
+          </Tag>
+          <Button icon={<LogoutOutlined />} onClick={logout}>
+            退出
+          </Button>
+        </div>
       </Header>
       <Content className="p-5">
         <Outlet />

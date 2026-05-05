@@ -1,6 +1,7 @@
 use crate::db::{self, DbConn};
 use crate::model::{AccessLog, ApiAlarm, ApiConfig, ApiGroup, ApiSql, AppInfo, DataSource, User};
 use chrono::Local;
+use sea_orm::{ConnectionTrait, FromQueryResult, QueryResult};
 use sea_query::Value;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -44,6 +45,18 @@ pub fn now_string() -> String {
 
 fn v(value: impl Serialize) -> Value {
     db::json_to_db_value(serde_json::json!(value))
+}
+
+fn typed_json_rows<T>(rows: Vec<QueryResult>) -> anyhow::Result<Vec<JsonValue>>
+where
+    T: FromQueryResult + Serialize,
+{
+    rows.iter()
+        .map(|row| {
+            let value = T::from_query_result(row, "")?;
+            serde_json::to_value(value).map_err(Into::into)
+        })
+        .collect()
 }
 
 async fn count_first(db: &DbConn, sql: &str, args: Vec<Value>) -> i64 {
@@ -575,22 +588,45 @@ pub async fn access_count_by_day(
     start: i64,
     end: i64,
 ) -> anyhow::Result<Vec<JsonValue>> {
-    db::query_json(
-        db,
-        "select date(timestamp, 'unixepoch', 'localtime') as date, sum(case when status = 200 then 1 else 0 end) as successNum, sum(case when status != 200 then 1 else 0 end) as failNum from access_log where timestamp >= ? and timestamp < ? group by date order by date",
-        vec![v(start), v(end)],
-    )
-    .await
+    #[derive(Debug, FromQueryResult, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AccessDayCount {
+        date: Option<String>,
+        success_num: i64,
+        fail_num: i64,
+    }
+
+    let rows = db
+        .conn
+        .query_all(db.statement(
+            "select date(timestamp, 'unixepoch', 'localtime') as date, coalesce(sum(case when status = 200 then 1 else 0 end), 0) as success_num, coalesce(sum(case when status != 200 then 1 else 0 end), 0) as fail_num from access_log where timestamp >= ? and timestamp < ? group by date order by date",
+            vec![v(start), v(end)],
+        ))
+        .await?;
+    typed_json_rows::<AccessDayCount>(rows)
 }
 
 pub async fn access_success_ratio(db: &DbConn, start: i64, end: i64) -> anyhow::Result<JsonValue> {
-    Ok(db::query_one_json(
-        db,
-        "select sum(case when status = 200 then 1 else 0 end) as successNum, sum(case when status != 200 then 1 else 0 end) as failNum from access_log where timestamp >= ? and timestamp < ?",
-        vec![v(start), v(end)],
-    )
-    .await?
-    .unwrap_or_else(|| serde_json::json!({"successNum":0,"failNum":0})))
+    #[derive(Debug, FromQueryResult, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AccessRatio {
+        success_num: i64,
+        fail_num: i64,
+    }
+
+    let rows = db
+        .conn
+        .query_all(db.statement(
+            "select coalesce(sum(case when status = 200 then 1 else 0 end), 0) as success_num, coalesce(sum(case when status != 200 then 1 else 0 end), 0) as fail_num from access_log where timestamp >= ? and timestamp < ?",
+            vec![v(start), v(end)],
+        ))
+        .await?;
+    let Some(row) = rows.first() else {
+        return Ok(serde_json::json!({"successNum":0,"failNum":0}));
+    };
+    Ok(serde_json::to_value(AccessRatio::from_query_result(
+        row, "",
+    )?)?)
 }
 
 pub async fn access_top(
@@ -599,22 +635,73 @@ pub async fn access_top(
     start: i64,
     end: i64,
 ) -> anyhow::Result<Vec<JsonValue>> {
-    let sql = match kind {
+    #[derive(Debug, FromQueryResult, Serialize)]
+    struct AccessTopUrl {
+        url: Option<String>,
+        num: i64,
+    }
+
+    #[derive(Debug, FromQueryResult, Serialize)]
+    struct AccessTopApp {
+        app_id: Option<String>,
+        num: i64,
+    }
+
+    #[derive(Debug, FromQueryResult, Serialize)]
+    struct AccessTopIp {
+        ip: Option<String>,
+        num: i64,
+    }
+
+    #[derive(Debug, FromQueryResult, Serialize)]
+    struct AccessTopDuration {
+        url: Option<String>,
+        duration: i64,
+    }
+
+    match kind {
         "api" => {
-            "select url, count(1) as num from access_log where timestamp >= ? and timestamp < ? group by url order by num desc limit 10"
+            let rows = db
+                .conn
+                .query_all(db.statement(
+                    "select url, count(1) as num from access_log where timestamp >= ? and timestamp < ? group by url order by num desc limit 10",
+                    vec![v(start), v(end)],
+                ))
+                .await?;
+            typed_json_rows::<AccessTopUrl>(rows)
         }
         "app" => {
-            "select app_id, count(1) as num from access_log where timestamp >= ? and timestamp < ? and app_id is not null and app_id != '' group by app_id order by num desc limit 10"
+            let rows = db
+                .conn
+                .query_all(db.statement(
+                    "select app_id, count(1) as num from access_log where timestamp >= ? and timestamp < ? and app_id is not null and app_id != '' group by app_id order by num desc limit 10",
+                    vec![v(start), v(end)],
+                ))
+                .await?;
+            typed_json_rows::<AccessTopApp>(rows)
         }
         "ip" => {
-            "select ip, count(1) as num from access_log where timestamp >= ? and timestamp < ? group by ip order by num desc limit 10"
+            let rows = db
+                .conn
+                .query_all(db.statement(
+                    "select ip, count(1) as num from access_log where timestamp >= ? and timestamp < ? group by ip order by num desc limit 10",
+                    vec![v(start), v(end)],
+                ))
+                .await?;
+            typed_json_rows::<AccessTopIp>(rows)
         }
         "duration" => {
-            "select url, round(avg(duration)) as duration from access_log where timestamp >= ? and timestamp < ? group by url order by duration desc limit 10"
+            let rows = db
+                .conn
+                .query_all(db.statement(
+                    "select url, cast(coalesce(round(avg(duration)), 0) as integer) as duration from access_log where timestamp >= ? and timestamp < ? group by url order by duration desc limit 10",
+                    vec![v(start), v(end)],
+                ))
+                .await?;
+            typed_json_rows::<AccessTopDuration>(rows)
         }
-        _ => "select url, count(1) as num from access_log where 1=0",
-    };
-    db::query_json(db, sql, vec![v(start), v(end)]).await
+        _ => Ok(Vec::new()),
+    }
 }
 
 pub async fn access_search(

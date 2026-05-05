@@ -62,6 +62,14 @@ export const monitorService = {
     apiPost<Array<Record<string, unknown>>>('/access/countByDay', input),
   successRatio: (input: Record<string, unknown>) =>
     apiPost<Record<string, unknown>>('/access/successRatio', input),
+  topApi: (input: Record<string, unknown>) =>
+    apiPost<Array<Record<string, unknown>>>('/access/top5api', input),
+  topApp: (input: Record<string, unknown>) =>
+    apiPost<Array<Record<string, unknown>>>('/access/top5app', input),
+  topIp: (input: Record<string, unknown>) =>
+    apiPost<Array<Record<string, unknown>>>('/access/topNIP', input),
+  topDuration: (input: Record<string, unknown>) =>
+    apiPost<Array<Record<string, unknown>>>('/access/top5duration', input),
 };
 
 export async function callUserApi(

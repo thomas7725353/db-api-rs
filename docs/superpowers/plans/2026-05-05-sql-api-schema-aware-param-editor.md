@@ -30,7 +30,7 @@ Do not manually edit `runtime-rust/static/**`; let `npm run build` regenerate it
 **Files:**
 - Create: `runtime-rust/frontend/src/components/sqlParamSchema.ts`
 
-- [ ] **Step 1: Create the helper module**
+- [x] **Step 1: Create the helper module**
 
 Add this file:
 
@@ -126,7 +126,7 @@ function normalizeMappedParamType(type: string | undefined): ParamSpec['type'] {
 }
 ```
 
-- [ ] **Step 2: Run TypeScript build to verify the new isolated module compiles**
+- [x] **Step 2: Run TypeScript build to verify the new isolated module compiles**
 
 Run:
 
@@ -138,7 +138,7 @@ Workdir: `runtime-rust/frontend`
 
 Expected: PASS or fail only because other already-dirty project files fail. If this new file has a TypeScript error, fix it before continuing.
 
-- [ ] **Step 3: Commit the helper module**
+- [x] **Step 3: Commit the helper module**
 
 Run:
 
@@ -152,7 +152,7 @@ rtk git commit -m "feat: add SQL param schema helpers"
 **Files:**
 - Modify: `runtime-rust/frontend/src/components/ParamEditor.tsx`
 
-- [ ] **Step 1: Update imports and props**
+- [x] **Step 1: Update imports and props**
 
 Change the imports and `ParamEditorProps` to include schema options and add/remove guards:
 
@@ -181,7 +181,7 @@ interface ParamEditorProps {
 }
 ```
 
-- [ ] **Step 2: Update component defaults and add schema-aware option state**
+- [x] **Step 2: Update component defaults and add schema-aware option state**
 
 Inside `ParamEditor`, include the new props and derived options:
 
@@ -201,7 +201,7 @@ export default function ParamEditor({
   const schemaOptions = fieldOptions ? mergeParamOptions(rows, fieldOptions) : undefined;
 ```
 
-- [ ] **Step 3: Make updates and add-row respect schema-selected fields**
+- [x] **Step 3: Make updates and add-row respect schema-selected fields**
 
 Replace `addRow` with this version and keep `update`/`removeRow` as they are:
 
@@ -219,7 +219,7 @@ Replace `addRow` with this version and keep `update`/`removeRow` as they are:
   }
 ```
 
-- [ ] **Step 4: Render parameter names as field dropdowns when schema exists**
+- [x] **Step 4: Render parameter names as field dropdowns when schema exists**
 
 Replace the `参数名` column render body with:
 
@@ -256,7 +256,7 @@ Replace the `参数名` column render body with:
       },
 ```
 
-- [ ] **Step 5: Render schema-derived type as read-only**
+- [x] **Step 5: Render schema-derived type as read-only**
 
 Replace the `类型` column render body with:
 
@@ -282,7 +282,7 @@ Replace the `类型` column render body with:
       },
 ```
 
-- [ ] **Step 6: Hide remove and add controls when requested**
+- [x] **Step 6: Hide remove and add controls when requested**
 
 Change the action column guard:
 
@@ -300,7 +300,7 @@ Change the add button guard:
       ) : null}
 ```
 
-- [ ] **Step 7: Run the frontend build**
+- [x] **Step 7: Run the frontend build**
 
 Run:
 
@@ -312,7 +312,7 @@ Workdir: `runtime-rust/frontend`
 
 Expected: PASS. The static assets under `runtime-rust/static` may change because this project builds there.
 
-- [ ] **Step 8: Commit ParamEditor changes**
+- [x] **Step 8: Commit ParamEditor changes**
 
 Run:
 
@@ -326,7 +326,7 @@ rtk git commit -m "feat: support schema-aware param editor"
 **Files:**
 - Modify: `runtime-rust/frontend/src/pages/ApiEditorPage.tsx`
 
-- [ ] **Step 1: Update imports**
+- [x] **Step 1: Update imports**
 
 Change the AntD and service imports:
 
@@ -342,7 +342,7 @@ import {
 } from '../components/sqlParamSchema';
 ```
 
-- [ ] **Step 2: Add SQL schema state**
+- [x] **Step 2: Add SQL schema state**
 
 Add this state after `jsonParam`:
 
@@ -353,7 +353,7 @@ Add this state after `jsonParam`:
   const [sqlSchemaError, setSqlSchemaError] = useState<string>();
 ```
 
-- [ ] **Step 3: Infer the selected table when loading an existing SQL API**
+- [x] **Step 3: Infer the selected table when loading an existing SQL API**
 
 In the SQL branch of the detail loader, after `setSqlText(firstSql?.sqlText || '')`, add:
 
@@ -361,7 +361,7 @@ In the SQL branch of the detail loader, after `setSqlText(firstSql?.sqlText || '
         setSqlTable(inferSqlTableName(firstSql?.sqlText || ''));
 ```
 
-- [ ] **Step 4: Load tables when the datasource changes**
+- [x] **Step 4: Load tables when the datasource changes**
 
 Add this effect after the detail loader effect:
 
@@ -381,7 +381,7 @@ Add this effect after the detail loader effect:
   }, [engine, selectedDatasourceId]);
 ```
 
-- [ ] **Step 5: Infer SQL table when raw SQL changes and no table is selected**
+- [x] **Step 5: Infer SQL table when raw SQL changes and no table is selected**
 
 Add this effect:
 
@@ -393,7 +393,7 @@ Add this effect:
   }, [engine, sqlTable, sqlText]);
 ```
 
-- [ ] **Step 6: Load columns when the SQL table changes and sync existing param types**
+- [x] **Step 6: Load columns when the SQL table changes and sync existing param types**
 
 Add this effect:
 
@@ -412,7 +412,7 @@ Add this effect:
   }, [engine, selectedDatasourceId, sqlTable]);
 ```
 
-- [ ] **Step 7: Add SQL-mode derived values**
+- [x] **Step 7: Add SQL-mode derived values**
 
 Add these derived values before `save()`:
 
@@ -421,7 +421,7 @@ Add these derived values before `save()`:
   const fixedSqlParams = useMemo(() => hasFixedIdParamContract(sqlText, params), [params, sqlText]);
 ```
 
-- [ ] **Step 8: Replace the SQL tab body with table selector plus textarea**
+- [x] **Step 8: Replace the SQL tab body with table selector plus textarea**
 
 Replace the SQL tab `children` with:
 
@@ -451,7 +451,7 @@ Replace the SQL tab `children` with:
 
 Update the `editorTabs` dependency list to include `sqlSchemaError`, `sqlTable`, and `sqlTables`.
 
-- [ ] **Step 9: Pass SQL field options and fixed-contract flags into ParamEditor**
+- [x] **Step 9: Pass SQL field options and fixed-contract flags into ParamEditor**
 
 Replace the SQL-mode `ParamEditor` under `请求参数定义` with:
 
@@ -467,7 +467,7 @@ Replace the SQL-mode `ParamEditor` under `请求参数定义` with:
           />
 ```
 
-- [ ] **Step 10: Run the frontend build**
+- [x] **Step 10: Run the frontend build**
 
 Run:
 
@@ -479,7 +479,7 @@ Workdir: `runtime-rust/frontend`
 
 Expected: PASS.
 
-- [ ] **Step 11: Commit SQL editor integration**
+- [x] **Step 11: Commit SQL editor integration**
 
 Run:
 
@@ -494,7 +494,7 @@ rtk git commit -m "feat: make SQL API params schema-aware"
 - Modify: `runtime-rust/seed_demo_api.sql`
 - Modify: `skills/dbapi-demo-crud/scripts/seed_demo_api.sql`
 
-- [ ] **Step 1: Add timestamp triggers after the `demo_items` table definition in both seed files**
+- [x] **Step 1: Add timestamp triggers after the `demo_items` table definition in both seed files**
 
 Insert this block after the `CREATE TABLE IF NOT EXISTS demo_items (...)` statement:
 
@@ -520,7 +520,7 @@ BEGIN
 END;
 ```
 
-- [ ] **Step 2: Update Demo CRUD parameter types in the skill seed**
+- [x] **Step 2: Update Demo CRUD parameter types in the skill seed**
 
 In `skills/dbapi-demo-crud/scripts/seed_demo_api.sql`, change the `demo_item_get`, `demo_item_update`, and `demo_item_delete` param JSON from `number` to `bigint`.
 
@@ -532,7 +532,7 @@ Expected rows:
 ('demo_item_delete', 'demo/items/delete', '删除 Demo Item', '按 id 删除记录', '[{"name":"id","type":"bigint"}]', 1, 'local_sqlite_demo', 0, 'demo_crud_group', NULL, NULL, datetime('now', 'localtime'), datetime('now', 'localtime'), 'application/x-www-form-urlencoded', 0, NULL),
 ```
 
-- [ ] **Step 3: Remove timestamp fields from create/update request SQL in both seed files**
+- [x] **Step 3: Remove timestamp fields from create/update request SQL in both seed files**
 
 Change the four CRUD `api_sql` rows in both seed files to this shape:
 
@@ -545,7 +545,7 @@ Change the four CRUD `api_sql` rows in both seed files to this shape:
 
 Keep each file's existing list or QueryBuilder list rows unchanged unless they need comma placement updates.
 
-- [ ] **Step 4: Verify seed SQL parses**
+- [x] **Step 4: Verify seed SQL parses**
 
 Run:
 
@@ -556,7 +556,7 @@ rtk sqlite3 :memory: < skills/dbapi-demo-crud/scripts/seed_demo_api.sql
 
 Expected: no output and exit code `0`.
 
-- [ ] **Step 5: Commit seed changes**
+- [x] **Step 5: Commit seed changes**
 
 Run:
 
@@ -571,7 +571,7 @@ rtk git commit -m "fix: tighten demo CRUD SQL parameters"
 - Read/verify: `data.db`
 - Read/verify: `runtime-rust/static/**`
 
-- [ ] **Step 1: Run frontend build**
+- [x] **Step 1: Run frontend build**
 
 Run:
 
@@ -583,7 +583,7 @@ Workdir: `runtime-rust/frontend`
 
 Expected: PASS.
 
-- [ ] **Step 2: Run Rust tests**
+- [x] **Step 2: Run Rust tests**
 
 Run:
 
@@ -595,7 +595,7 @@ Workdir: `runtime-rust`
 
 Expected: PASS.
 
-- [ ] **Step 3: Apply the runtime seed to local data.db for manual UI verification**
+- [x] **Step 3: Apply the runtime seed to local data.db for manual UI verification**
 
 Run:
 
@@ -607,7 +607,7 @@ Workdir: repository root.
 
 Expected: no output and exit code `0`.
 
-- [ ] **Step 4: Verify the four Demo CRUD metadata rows**
+- [x] **Step 4: Verify the four Demo CRUD metadata rows**
 
 Run:
 
@@ -624,7 +624,7 @@ demo_item_get|demo/items/get|[{"name":"id","type":"bigint"}]|SELECT id, name, st
 demo_item_update|demo/items/update|[{"name":"id","type":"bigint"},{"name":"name","type":"string"},{"name":"status","type":"string"},{"name":"note","type":"string"}]|UPDATE demo_items SET name = $name, status = $status, note = $note WHERE id = $id
 ```
 
-- [ ] **Step 5: Start or restart the Rust runtime**
+- [x] **Step 5: Start or restart the Rust runtime**
 
 If no server is running:
 
@@ -638,7 +638,7 @@ If a server is already running, restart it so metadata caches pick up the seed c
 
 Expected: server listens on `127.0.0.1:8520`.
 
-- [ ] **Step 6: Browser smoke test the editor**
+- [x] **Step 6: Browser smoke test the editor**
 
 Open `http://127.0.0.1:8520/apis`.
 
@@ -650,7 +650,7 @@ Manually verify:
 - Parameter-name controls are dropdowns populated from `demo_items` fields.
 - Parameter type is displayed from schema mapping and is not manually selectable.
 
-- [ ] **Step 7: Commit generated static assets only if they changed from the frontend build**
+- [x] **Step 7: Commit generated static assets only if they changed from the frontend build**
 
 Run:
 
@@ -666,3 +666,13 @@ rtk git commit -m "build: regenerate Rust runtime frontend assets"
 ```
 
 Do not commit `data.db`, `data.db-wal`, or `data.db-shm` unless the user explicitly asks.
+
+## Execution Notes
+
+- Task 1 completed in commit `e223841` (`feat: add SQL param schema helpers`).
+- Task 2 completed in commit `c00cd71` (`feat: support schema-aware param editor`).
+- Task 3 completed across commits `fff2a3f`, `414f2a9`, and `4984a16`.
+- Task 4 completed across commits `59c8f81`, `d25ac50`, and `6e6b5c5`.
+- Task 5 verification completed with `rtk npm run build`, `rtk cargo test`, runtime seed application, metadata checks, runtime restart, and HTTP-only CRUD smoke verification.
+- `runtime-rust/static/**` was regenerated by the frontend build, but the worktree already had unrelated/pre-existing static and frontend changes. The generated static files were inspected and left uncommitted to avoid mixing unrelated dirty state into this plan's commits.
+- `data.db`, `data.db-wal`, and `data.db-shm` changed during local runtime verification and were intentionally not committed.

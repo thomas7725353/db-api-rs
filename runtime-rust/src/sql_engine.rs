@@ -24,28 +24,85 @@ impl SqlTransformer {
             DialectType::Sqlite => Box::new(SQLiteDialect {}),
         };
 
-        let mut statements = Parser::parse_sql(&*dialect, sql)?;
+        let statements = Parser::parse_sql(&*dialect, sql)?;
 
         if statements.len() != 1 {
             return Err(anyhow!("Only single statement allowed"));
         }
 
-        let statement = &mut statements[0];
+        let statement = &statements[0];
 
-        // Security Guard: Only SELECT allowed
         match statement {
-            Statement::Query(_) => {}
-            _ => return Err(anyhow!("Only SELECT statements are allowed")),
+            Statement::Query(_)
+            | Statement::Insert { .. }
+            | Statement::Update { .. }
+            | Statement::Delete { .. } => {}
+            _ => {
+                return Err(anyhow!(
+                    "Only SELECT/INSERT/UPDATE/DELETE statements are allowed"
+                ));
+            }
         }
 
+        Self::replace_named_params(sql, dialect_type)
+    }
+
+    pub fn is_query(sql: &str, dialect_type: DialectType) -> Result<bool> {
+        let dialect: Box<dyn Dialect> = match dialect_type {
+            DialectType::MySql => Box::new(MySqlDialect {}),
+            DialectType::PostgreSql => Box::new(PostgreSqlDialect {}),
+            DialectType::Sqlite => Box::new(SQLiteDialect {}),
+        };
+        let statements = Parser::parse_sql(&*dialect, sql)?;
+        Ok(matches!(statements.as_slice(), [Statement::Query(_)]))
+    }
+
+    fn replace_named_params(sql: &str, dialect_type: DialectType) -> Result<(String, Vec<String>)> {
+        let mut transformed = String::with_capacity(sql.len());
         let mut params = Vec::new();
-        let mut placeholder_index = 0;
+        let mut index = 0usize;
+        let mut chars = sql.chars().peekable();
+        let mut in_single_quote = false;
 
-        Self::visit_statement(statement, &mut params, &mut placeholder_index, dialect_type);
+        while let Some(ch) = chars.next() {
+            if ch == '\'' {
+                transformed.push(ch);
+                in_single_quote = !in_single_quote;
+                continue;
+            }
 
-        let transformed_sql = statement.to_string();
+            if !in_single_quote && ch == '$' {
+                let mut name = String::new();
+                while let Some(next) = chars.peek().copied() {
+                    if next.is_ascii_alphanumeric() || next == '_' {
+                        name.push(next);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
 
-        Ok((transformed_sql, params))
+                if name.is_empty() {
+                    transformed.push(ch);
+                    continue;
+                }
+
+                index += 1;
+                params.push(name);
+                match dialect_type {
+                    DialectType::MySql | DialectType::Sqlite => transformed.push('?'),
+                    DialectType::PostgreSql => {
+                        transformed.push('$');
+                        transformed.push_str(&index.to_string());
+                    }
+                }
+                continue;
+            }
+
+            transformed.push(ch);
+        }
+
+        Ok((transformed, params))
     }
 
     pub fn extract_params(param_names: &[String], json_data: &JsonValue) -> Result<Vec<JsonValue>> {
@@ -60,6 +117,7 @@ impl SqlTransformer {
         Ok(values)
     }
 
+    #[allow(dead_code)]
     fn visit_statement(
         stmt: &mut Statement,
         params: &mut Vec<String>,
@@ -71,6 +129,7 @@ impl SqlTransformer {
         }
     }
 
+    #[allow(dead_code)]
     fn visit_query(
         query: &mut Query,
         params: &mut Vec<String>,
@@ -101,6 +160,7 @@ impl SqlTransformer {
         }
     }
 
+    #[allow(dead_code)]
     fn visit_set_expr(
         set_expr: &mut SetExpr,
         params: &mut Vec<String>,
@@ -130,6 +190,7 @@ impl SqlTransformer {
         }
     }
 
+    #[allow(dead_code)]
     fn visit_select(
         select: &mut Select,
         params: &mut Vec<String>,
@@ -185,6 +246,7 @@ impl SqlTransformer {
         }
     }
 
+    #[allow(dead_code)]
     fn visit_table_factor(
         tf: &mut TableFactor,
         params: &mut Vec<String>,
@@ -229,6 +291,7 @@ impl SqlTransformer {
         }
     }
 
+    #[allow(dead_code)]
     fn visit_expr(
         expr: &mut Expr,
         params: &mut Vec<String>,
@@ -514,10 +577,36 @@ mod tests {
     }
 
     #[test]
-    fn test_security_select_only() {
+    fn test_dml_statements_are_allowed_for_configured_crud_apis() {
         let sql = "DELETE FROM users WHERE id = $id";
         let result = SqlTransformer::transform(sql, DialectType::MySql);
-        assert!(result.is_err());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_dml_transformation() {
+        let cases = vec![
+            (
+                "INSERT INTO demo_items (name, status) VALUES ($name, $status)",
+                vec!["name", "status"],
+            ),
+            (
+                "UPDATE demo_items SET name = $name WHERE id = $id",
+                vec!["name", "id"],
+            ),
+            ("DELETE FROM demo_items WHERE id = $id", vec!["id"]),
+        ];
+
+        for (sql, expected_params) in cases {
+            let (transformed, params) = SqlTransformer::transform(sql, DialectType::Sqlite)
+                .unwrap_or_else(|_| panic!("Failed to transform: {}", sql));
+            assert!(
+                transformed.contains("?"),
+                "no placeholders in {}",
+                transformed
+            );
+            assert_eq!(params, expected_params, "wrong params for {}", sql);
+        }
     }
 
     #[test]

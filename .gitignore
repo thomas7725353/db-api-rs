@@ -7,3 +7,5 @@ src/main/resources/static
 # Added by cargo
 
 /target
+node_modules/
+runtime-rust/frontend/tsconfig.tsbuildinfo

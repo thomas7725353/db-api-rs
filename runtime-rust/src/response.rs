@@ -5,7 +5,8 @@ use serde_json::{Value as JsonValue, json};
 #[derive(Debug, Serialize)]
 pub struct ResponseDto<T: Serialize> {
     pub success: bool,
-    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub msg: Option<String>,
     pub data: Option<T>,
 }
 
@@ -13,7 +14,7 @@ impl<T: Serialize> ResponseDto<T> {
     pub fn success(message: impl Into<String>, data: Option<T>) -> Self {
         Self {
             success: true,
-            message: message.into(),
+            msg: Some(message.into()),
             data,
         }
     }
@@ -21,10 +22,18 @@ impl<T: Serialize> ResponseDto<T> {
     pub fn failure(message: impl Into<String>, data: Option<T>) -> Self {
         Self {
             success: false,
-            message: message.into(),
+            msg: Some(message.into()),
             data,
         }
     }
+}
+
+pub fn dto_data<T: Serialize>(data: T) -> impl IntoResponse {
+    Json(ResponseDto {
+        success: true,
+        msg: None,
+        data: Some(data),
+    })
 }
 
 pub fn dto_ok<T: Serialize>(message: impl Into<String>, data: Option<T>) -> impl IntoResponse {

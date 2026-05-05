@@ -1,0 +1,4 @@
+interface:
+  display_name: "DBApi Demo CRUD"
+  short_description: "Seed demo CRUD APIs into db-api"
+  default_prompt: "Create or refresh the db-api demo CRUD group, datasource, demo_items table, and CRUD/list API configs, then verify with curl."

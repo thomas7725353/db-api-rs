@@ -10,12 +10,3 @@ services:
       - "8520:8520"
     volumes:
       - ./data.db:/data/data.db
-
-  db-api-web:
-    build:
-      context: .
-      dockerfile: src/main/webapp/Dockerfile
-    depends_on:
-      - db-api-rs
-    ports:
-      - "8521:8521"

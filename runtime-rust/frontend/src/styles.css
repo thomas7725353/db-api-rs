@@ -1,0 +1,66 @@
+@import 'tailwindcss';
+@import 'antd/dist/reset.css';
+@import 'react-querybuilder/dist/query-builder.css';
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background: #f5f7fb;
+}
+
+.query-builder-card .ant-card-body {
+  background: #f7faff;
+}
+
+.dbapi-query-builder {
+  padding: 16px;
+  border: 1px solid #9eb6df;
+  border-radius: 10px;
+  background: #dce8fb;
+}
+
+.dbapi-query-builder .ruleGroup {
+  padding: 12px;
+  border: 1px solid #8fa9d6;
+  border-radius: 8px;
+  background: #c8daf6;
+}
+
+.dbapi-query-builder .ruleGroup .ruleGroup {
+  background: #b8cdf0;
+}
+
+.dbapi-query-builder .ruleGroup-header,
+.dbapi-query-builder .rule {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 8px 0;
+}
+
+.dbapi-query-builder .rule select,
+.dbapi-query-builder .rule input,
+.dbapi-query-builder .ruleGroup-header select,
+.dbapi-query-builder .ruleGroup-header button {
+  min-height: 34px;
+}
+
+.dbapi-query-builder .rule-fields,
+.dbapi-query-builder .rule-operators {
+  min-width: 180px;
+}
+
+.dbapi-query-builder .rule-value {
+  min-width: 260px;
+}
+
+.dbapi-query-builder .rule-remove,
+.dbapi-query-builder .ruleGroup-remove {
+  min-width: 34px;
+}

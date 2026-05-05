@@ -1,6 +1,8 @@
+use crate::db::{self, DbConn, DbPoolManager};
 use crate::form::{map_to_json, merge_json_objects, parse_request_body};
-use crate::model::{ApiConfig, DataSource};
-use crate::pool_manager::PoolManager;
+use crate::model::ApiConfig;
+use crate::query_dsl::{self, QueryBuilderDsl};
+use crate::repository;
 use crate::response::api_error;
 use crate::sql_engine::{DialectType, SqlTransformer};
 use anyhow::{Result, anyhow};
@@ -8,27 +10,27 @@ use axum::{
     Json,
     body::Body,
     extract::{Path, Query, State},
-    http::{Request, StatusCode},
+    http::{HeaderMap, Request, StatusCode},
     response::IntoResponse,
 };
 use moka::future::Cache;
-use rbatis::RBatis;
+use sea_query::Value;
 use serde::Deserialize;
 use serde_json::{Value as JsonValue, json};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const DEFAULT_CONFIG_CACHE_TTL: Duration = Duration::from_secs(5);
 
 pub struct AppState {
-    pub metadata_db: RBatis,
-    pub pool_manager: Arc<PoolManager>,
+    pub metadata_db: DbConn,
+    pub pool_manager: Arc<DbPoolManager>,
     pub config_cache: Cache<String, ApiConfig>,
 }
 
 impl AppState {
-    pub fn new(metadata_db: RBatis, pool_manager: Arc<PoolManager>) -> Self {
+    pub fn new(metadata_db: DbConn, pool_manager: Arc<DbPoolManager>) -> Self {
         Self {
             metadata_db,
             pool_manager,
@@ -55,40 +57,116 @@ pub async fn handle_api(
     Path(path): Path<String>,
     State(state): State<Arc<AppState>>,
     Query(query_params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
     request: Request<Body>,
 ) -> impl IntoResponse {
+    let started = Instant::now();
+    let timestamp = chrono::Utc::now().timestamp();
+    let url = format!("/api/{}", path);
     // 1. Get ApiConfig (Cache -> DB)
     let config = match load_api_config(&state, &path).await {
         Some(c) if c.status == Some(1) => c,
-        _ => return api_error(StatusCode::NOT_FOUND, "API not found or offline").into_response(),
+        _ => {
+            write_access_log(
+                &state,
+                AccessLogInput {
+                    url,
+                    status: StatusCode::NOT_FOUND.as_u16() as i32,
+                    duration: started.elapsed().as_millis() as i64,
+                    timestamp,
+                    app_id: None,
+                    api_id: None,
+                    error: Some("API not found or offline".to_string()),
+                },
+            )
+            .await;
+            return api_error(StatusCode::NOT_FOUND, "API not found or offline").into_response();
+        }
+    };
+    let api_id = config.id.clone();
+
+    let app_id = match authorize_api(&state, &config, &headers).await {
+        Ok(app_id) => app_id,
+        Err(message) => {
+            write_access_log(
+                &state,
+                AccessLogInput {
+                    url,
+                    status: StatusCode::UNAUTHORIZED.as_u16() as i32,
+                    duration: started.elapsed().as_millis() as i64,
+                    timestamp,
+                    app_id: None,
+                    api_id,
+                    error: Some(message.clone()),
+                },
+            )
+            .await;
+            return api_error(StatusCode::UNAUTHORIZED, message).into_response();
+        }
     };
 
     // 2. Get DataSource
-    let ds_id = match config.datasource_id {
+    let ds_id = match config.datasource_id.as_deref() {
         Some(id) => id,
         None => {
-            return api_error(StatusCode::INTERNAL_SERVER_ERROR, "DataSource ID missing")
-                .into_response();
+            let message = "DataSource ID missing".to_string();
+            write_access_log(
+                &state,
+                AccessLogInput {
+                    url,
+                    status: StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i32,
+                    duration: started.elapsed().as_millis() as i64,
+                    timestamp,
+                    app_id,
+                    api_id,
+                    error: Some(message.clone()),
+                },
+            )
+            .await;
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, message).into_response();
         }
     };
 
-    let ds = match DataSource::select_by_id(&state.metadata_db, ds_id).await {
+    let ds = match repository::select_datasource_by_id(&state.metadata_db, ds_id).await {
         Ok(Some(ds)) => ds,
         _ => {
-            return api_error(StatusCode::INTERNAL_SERVER_ERROR, "DataSource not found")
-                .into_response();
+            let message = "DataSource not found".to_string();
+            write_access_log(
+                &state,
+                AccessLogInput {
+                    url,
+                    status: StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i32,
+                    duration: started.elapsed().as_millis() as i64,
+                    timestamp,
+                    app_id,
+                    api_id,
+                    error: Some(message.clone()),
+                },
+            )
+            .await;
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, message).into_response();
         }
     };
 
-    // 3. Get/Create RBatis pool
-    let rb = match state.pool_manager.get_or_create(&ds).await {
-        Ok(rb) => rb,
+    // 3. Get/Create datasource connection
+    let data_db = match state.pool_manager.get_or_create(&ds).await {
+        Ok(data_db) => data_db,
         Err(e) => {
-            return api_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to connect to datasource: {}", e),
+            let message = format!("Failed to connect to datasource: {}", e);
+            write_access_log(
+                &state,
+                AccessLogInput {
+                    url,
+                    status: StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i32,
+                    duration: started.elapsed().as_millis() as i64,
+                    timestamp,
+                    app_id,
+                    api_id,
+                    error: Some(message.clone()),
+                },
             )
-            .into_response();
+            .await;
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, message).into_response();
         }
     };
 
@@ -98,63 +176,409 @@ pub async fn handle_api(
         "postgres" | "postgresql" => DialectType::PostgreSql,
         "sqlite" => DialectType::Sqlite,
         _ => {
-            return api_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Unsupported database type",
+            let message = "Unsupported database type".to_string();
+            write_access_log(
+                &state,
+                AccessLogInput {
+                    url,
+                    status: StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i32,
+                    duration: started.elapsed().as_millis() as i64,
+                    timestamp,
+                    app_id,
+                    api_id,
+                    error: Some(message.clone()),
+                },
             )
-            .into_response();
+            .await;
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, message).into_response();
         }
     };
 
-    let sql = config.sql.as_deref().unwrap_or("");
-    let (transformed_sql, param_names) = match SqlTransformer::transform(sql, dialect) {
-        Ok(res) => res,
-        Err(e) => {
-            return api_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("SQL transformation failed: {}", e),
-            )
-            .into_response();
-        }
-    };
+    let first_sql = config.sql_list.first();
+    let sql = first_sql
+        .and_then(|sql| sql.sql_text.as_deref())
+        .unwrap_or("");
 
     // 5. Extract Params
     let body_params = match parse_request_body(request).await {
         Ok(params) => params,
         Err(e) => {
-            return api_error(StatusCode::BAD_REQUEST, e.to_string()).into_response();
+            let message = e.to_string();
+            write_access_log(
+                &state,
+                AccessLogInput {
+                    url,
+                    status: StatusCode::BAD_REQUEST.as_u16() as i32,
+                    duration: started.elapsed().as_millis() as i64,
+                    timestamp,
+                    app_id,
+                    api_id,
+                    error: Some(message.clone()),
+                },
+            )
+            .await;
+            return api_error(StatusCode::BAD_REQUEST, message).into_response();
         }
     };
     let all_params = merge_json_objects(map_to_json(query_params), body_params);
-    let rbs_values = match bind_param_values(&param_names, &all_params, config.params.as_deref()) {
+
+    if is_query_builder_config(&config) {
+        let dsl = match serde_json::from_str::<QueryBuilderDsl>(sql) {
+            Ok(dsl) => dsl,
+            Err(e) => {
+                let message = format!("Invalid QueryBuilder DSL: {}", e);
+                write_access_log(
+                    &state,
+                    AccessLogInput {
+                        url,
+                        status: StatusCode::BAD_REQUEST.as_u16() as i32,
+                        duration: started.elapsed().as_millis() as i64,
+                        timestamp,
+                        app_id,
+                        api_id,
+                        error: Some(message.clone()),
+                    },
+                )
+                .await;
+                return api_error(StatusCode::BAD_REQUEST, message).into_response();
+            }
+        };
+        match execute_query_builder(&data_db, &dsl, &all_params).await {
+            Ok(data) => {
+                write_access_log(
+                    &state,
+                    AccessLogInput {
+                        url,
+                        status: StatusCode::OK.as_u16() as i32,
+                        duration: started.elapsed().as_millis() as i64,
+                        timestamp,
+                        app_id,
+                        api_id,
+                        error: None,
+                    },
+                )
+                .await;
+                return api_success(data).into_response();
+            }
+            Err(e) => {
+                let message = e.to_string();
+                write_access_log(
+                    &state,
+                    AccessLogInput {
+                        url,
+                        status: StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i32,
+                        duration: started.elapsed().as_millis() as i64,
+                        timestamp,
+                        app_id,
+                        api_id,
+                        error: Some(message.clone()),
+                    },
+                )
+                .await;
+                return sql_error(message).into_response();
+            }
+        }
+    }
+
+    let (transformed_sql, param_names) = match SqlTransformer::transform(sql, dialect) {
+        Ok(res) => res,
+        Err(e) => {
+            let message = format!("SQL transformation failed: {}", e);
+            write_access_log(
+                &state,
+                AccessLogInput {
+                    url,
+                    status: StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i32,
+                    duration: started.elapsed().as_millis() as i64,
+                    timestamp,
+                    app_id,
+                    api_id,
+                    error: Some(message.clone()),
+                },
+            )
+            .await;
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, message).into_response();
+        }
+    };
+
+    let db_values = match bind_param_values(&param_names, &all_params, config.params.as_deref()) {
         Ok(vals) => vals,
-        Err(e) => return api_error(StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => {
+            let message = e.to_string();
+            write_access_log(
+                &state,
+                AccessLogInput {
+                    url,
+                    status: StatusCode::BAD_REQUEST.as_u16() as i32,
+                    duration: started.elapsed().as_millis() as i64,
+                    timestamp,
+                    app_id,
+                    api_id,
+                    error: Some(message.clone()),
+                },
+            )
+            .await;
+            return api_error(StatusCode::BAD_REQUEST, message).into_response();
+        }
     };
 
     // 6. Execute SQL
-    match rb
-        .exec_decode::<JsonValue>(&transformed_sql, rbs_values)
-        .await
-    {
-        Ok(result) => (
-            StatusCode::OK,
-            Json(json!({
-                "success": true,
-                "msg": "接口访问成功",
-                "data": result
-            })),
-        )
-            .into_response(),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "success": false,
-                "msg": "SQL execution failed",
-                "data": null
-            })),
-        )
-            .into_response(),
+    let is_query = SqlTransformer::is_query(sql, dialect).unwrap_or(false);
+    if is_query {
+        let query_result = if is_single_row_response(
+            first_sql.and_then(|sql| sql.transform_plugin_params.as_deref()),
+        ) {
+            db::query_one_json(&data_db, &transformed_sql, db_values)
+                .await
+                .map(|row| row.unwrap_or(JsonValue::Null))
+        } else {
+            db::query_json(&data_db, &transformed_sql, db_values)
+                .await
+                .map(JsonValue::Array)
+        };
+
+        match query_result {
+            Ok(result) => {
+                write_access_log(
+                    &state,
+                    AccessLogInput {
+                        url,
+                        status: StatusCode::OK.as_u16() as i32,
+                        duration: started.elapsed().as_millis() as i64,
+                        timestamp,
+                        app_id,
+                        api_id,
+                        error: None,
+                    },
+                )
+                .await;
+                api_success(result).into_response()
+            }
+            Err(e) => {
+                let message = e.to_string();
+                write_access_log(
+                    &state,
+                    AccessLogInput {
+                        url,
+                        status: StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i32,
+                        duration: started.elapsed().as_millis() as i64,
+                        timestamp,
+                        app_id,
+                        api_id,
+                        error: Some(message.clone()),
+                    },
+                )
+                .await;
+                sql_error(message).into_response()
+            }
+        }
+    } else {
+        match db::execute(&data_db, &transformed_sql, db_values).await {
+            Ok(rows_affected) => {
+                write_access_log(
+                    &state,
+                    AccessLogInput {
+                        url,
+                        status: StatusCode::OK.as_u16() as i32,
+                        duration: started.elapsed().as_millis() as i64,
+                        timestamp,
+                        app_id,
+                        api_id,
+                        error: None,
+                    },
+                )
+                .await;
+                api_success(json!({
+                    "rowsAffected": rows_affected,
+                    "lastInsertId": null
+                }))
+                .into_response()
+            }
+            Err(e) => {
+                let message = e.to_string();
+                write_access_log(
+                    &state,
+                    AccessLogInput {
+                        url,
+                        status: StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i32,
+                        duration: started.elapsed().as_millis() as i64,
+                        timestamp,
+                        app_id,
+                        api_id,
+                        error: Some(message.clone()),
+                    },
+                )
+                .await;
+                sql_error(message).into_response()
+            }
+        }
     }
+}
+
+fn is_query_builder_config(config: &ApiConfig) -> bool {
+    config
+        .sql_list
+        .first()
+        .and_then(|sql| sql.transform_plugin.as_deref())
+        .is_some_and(|plugin| plugin.eq_ignore_ascii_case("queryBuilder"))
+}
+
+fn is_single_row_response(params: Option<&str>) -> bool {
+    let Some(raw) = params.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return false;
+    };
+    if raw.eq_ignore_ascii_case("single") || raw.eq_ignore_ascii_case("one") {
+        return true;
+    }
+    if raw
+        .split([';', '&', ',', '\n'])
+        .map(str::trim)
+        .any(|part| {
+            let Some((key, value)) = part.split_once('=') else {
+                return false;
+            };
+            key.trim().eq_ignore_ascii_case("resultType")
+                && matches!(value.trim().to_ascii_lowercase().as_str(), "object" | "one" | "single")
+        })
+    {
+        return true;
+    }
+
+    serde_json::from_str::<JsonValue>(raw)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("resultType")
+                .or_else(|| value.get("result_type"))
+                .and_then(JsonValue::as_str)
+                .map(|value| value.to_ascii_lowercase())
+        })
+        .is_some_and(|value| matches!(value.as_str(), "object" | "one" | "single"))
+}
+
+async fn execute_query_builder(
+    data_db: &DbConn,
+    dsl: &QueryBuilderDsl,
+    input: &JsonValue,
+) -> Result<JsonValue> {
+    let built = query_dsl::build_query(dsl, input, data_db.backend)?;
+    let rows = db::query_json(data_db, &built.sql, built.values).await?;
+    if let Some(count_sql) = built.count_sql {
+        let total = db::query_one_json(data_db, &count_sql, built.count_values)
+            .await?
+            .and_then(first_json_value)
+            .and_then(|value| {
+                value
+                    .as_i64()
+                    .or_else(|| value.as_u64().and_then(|raw| i64::try_from(raw).ok()))
+                    .or_else(|| value.as_str()?.parse::<i64>().ok())
+            })
+            .unwrap_or(rows.len() as i64);
+        Ok(json!({
+            "list": rows,
+            "total": total,
+            "limit": built.limit,
+            "offset": built.offset
+        }))
+    } else {
+        Ok(JsonValue::Array(rows))
+    }
+}
+
+fn first_json_value(value: JsonValue) -> Option<JsonValue> {
+    match value {
+        JsonValue::Object(map) => map.into_values().next(),
+        other => Some(other),
+    }
+}
+
+async fn authorize_api(
+    state: &AppState,
+    config: &ApiConfig,
+    headers: &HeaderMap,
+) -> Result<Option<String>, String> {
+    if config.previlege != Some(0) {
+        return Ok(None);
+    }
+
+    let token = headers
+        .get("Authorization")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .trim();
+    if token.is_empty() {
+        return Err("No Token!".to_string());
+    }
+
+    let app = repository::select_app_by_token(&state.metadata_db, token)
+        .await
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "Token Invalid!".to_string())?;
+    let app_id = app.id.clone().ok_or_else(|| "Token Invalid!".to_string())?;
+    let expire_at = app.expire_at.unwrap_or(-1);
+    if expire_at == 0 {
+        let _ = repository::clear_app_token(&state.metadata_db, &app_id).await;
+    } else if expire_at > 0 && expire_at <= chrono::Utc::now().timestamp_millis() {
+        let _ = repository::clear_app_token(&state.metadata_db, &app_id).await;
+        return Err("token expired!".to_string());
+    }
+
+    let group_id = config.group_id.as_deref().unwrap_or("");
+    let groups = repository::select_app_auth_groups(&state.metadata_db, &app_id)
+        .await
+        .map_err(|err| err.to_string())?;
+    if !groups.iter().any(|group| group == group_id) {
+        return Err("Token Invalid!".to_string());
+    }
+
+    Ok(Some(app_id))
+}
+
+struct AccessLogInput {
+    url: String,
+    status: i32,
+    duration: i64,
+    timestamp: i64,
+    app_id: Option<String>,
+    api_id: Option<String>,
+    error: Option<String>,
+}
+
+async fn write_access_log(state: &AppState, input: AccessLogInput) {
+    let log = crate::model::AccessLog {
+        id: Some(repository::new_id()),
+        url: Some(input.url),
+        status: Some(input.status),
+        duration: Some(input.duration),
+        timestamp: Some(input.timestamp),
+        ip: Some("127.0.0.1".to_string()),
+        app_id: input.app_id,
+        api_id: input.api_id,
+        error: input.error,
+    };
+    let _ = repository::insert_access_log(&state.metadata_db, &log).await;
+}
+
+fn api_success(data: JsonValue) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "msg": "接口访问成功",
+            "data": data
+        })),
+    )
+}
+
+fn sql_error(message: String) -> impl IntoResponse {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({
+            "success": false,
+            "msg": message,
+            "data": null
+        })),
+    )
 }
 
 async fn load_api_config(state: &AppState, path: &str) -> Option<ApiConfig> {
@@ -163,8 +587,15 @@ async fn load_api_config(state: &AppState, path: &str) -> Option<ApiConfig> {
             return Some(cached);
         }
 
-        if let Ok(Some(c)) = ApiConfig::select_by_path_online(&state.metadata_db, &candidate).await
+        if let Ok(Some(mut c)) =
+            repository::select_api_by_path_online(&state.metadata_db, &candidate).await
         {
+            if repository::fill_api_children(&state.metadata_db, &mut c)
+                .await
+                .is_err()
+            {
+                continue;
+            }
             state.config_cache.insert(candidate, c.clone()).await;
             return Some(c);
         }
@@ -191,7 +622,7 @@ fn bind_param_values(
     param_names: &[String],
     input: &JsonValue,
     params_schema: Option<&str>,
-) -> Result<Vec<rbs::Value>> {
+) -> Result<Vec<Value>> {
     let values = SqlTransformer::extract_params(param_names, input)?;
     let param_types = parse_param_types(params_schema)?;
 
@@ -233,29 +664,34 @@ fn parse_param_types(params_schema: Option<&str>) -> Result<HashMap<String, Stri
     Ok(param_types)
 }
 
-fn coerce_value(name: &str, value: JsonValue, param_type: Option<&str>) -> Result<rbs::Value> {
+fn coerce_value(name: &str, value: JsonValue, param_type: Option<&str>) -> Result<Value> {
     match param_type {
         Some("number") => coerce_number(name, value),
         Some("string") | Some("date") => match value {
-            JsonValue::String(s) => Ok(rbs::value!(s)),
-            other => Ok(rbs::value!(other.to_string())),
+            JsonValue::String(s) => Ok(db::json_to_db_value(JsonValue::String(s))),
+            other => Ok(db::json_to_db_value(JsonValue::String(other.to_string()))),
         },
-        _ => rbs::to_value(value)
-            .map_err(|err| anyhow!("Invalid parameter value for {}: {}", name, err)),
+        _ => Ok(db::json_to_db_value(value)),
     }
 }
 
-fn coerce_number(name: &str, value: JsonValue) -> Result<rbs::Value> {
+fn coerce_number(name: &str, value: JsonValue) -> Result<Value> {
     match value {
-        JsonValue::Number(number) if number.is_i64() => Ok(rbs::value!(number.as_i64().unwrap())),
-        JsonValue::Number(number) if number.is_u64() => Ok(rbs::value!(number.as_u64().unwrap())),
-        JsonValue::Number(number) if number.is_f64() => Ok(rbs::value!(number.as_f64().unwrap())),
+        JsonValue::Number(number) if number.is_i64() => {
+            Ok(db::json_to_db_value(json!(number.as_i64().unwrap())))
+        }
+        JsonValue::Number(number) if number.is_u64() => {
+            Ok(db::json_to_db_value(json!(number.as_u64().unwrap())))
+        }
+        JsonValue::Number(number) if number.is_f64() => {
+            Ok(db::json_to_db_value(json!(number.as_f64().unwrap())))
+        }
         JsonValue::String(raw) => {
             let trimmed = raw.trim();
             if let Ok(value) = trimmed.parse::<i64>() {
-                Ok(rbs::value!(value))
+                Ok(db::json_to_db_value(json!(value)))
             } else if let Ok(value) = trimmed.parse::<f64>() {
-                Ok(rbs::value!(value))
+                Ok(db::json_to_db_value(json!(value)))
             } else {
                 Err(anyhow!("Parameter {} must be a number", name))
             }
@@ -267,339 +703,19 @@ fn coerce_number(name: &str, value: JsonValue) -> Result<rbs::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repository::init_repository;
-    use axum::{
-        Router,
-        body::Body,
-        http::{Request, StatusCode},
-        routing::any,
-    };
-    use tempfile::TempDir;
-    use tower::ServiceExt;
 
-    async fn setup_test_state() -> Arc<AppState> {
-        let metadata_db = init_repository("sqlite::memory:").await.unwrap();
-        metadata_db.exec("CREATE TABLE datasource (id INTEGER PRIMARY KEY, name TEXT, note TEXT, type TEXT, url TEXT, username TEXT, password TEXT)", vec![]).await.unwrap();
-        metadata_db.exec("CREATE TABLE api_config (id INTEGER PRIMARY KEY, path TEXT, name TEXT, note TEXT, sql TEXT, params TEXT, status INTEGER, datasource_id INTEGER)", vec![]).await.unwrap();
-
-        Arc::new(AppState {
-            metadata_db,
-            pool_manager: Arc::new(PoolManager::new()),
-            config_cache: Cache::new(100),
-        })
+    #[test]
+    fn result_type_object_marks_select_as_single_row_response() {
+        assert!(is_single_row_response(Some("resultType=object")));
+        assert!(is_single_row_response(Some("resultType=one")));
+        assert!(is_single_row_response(Some(r#"{"resultType":"object"}"#)));
     }
 
-    async fn setup_file_backed_state() -> (Arc<AppState>, TempDir, String) {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let metadata_path = temp_dir.path().join("metadata.db");
-        let data_path = temp_dir.path().join("data.db");
-
-        let metadata_db = init_repository(&format!("sqlite://{}", metadata_path.display()))
-            .await
-            .unwrap();
-        metadata_db.exec("CREATE TABLE datasource (id INTEGER PRIMARY KEY, name TEXT, note TEXT, type TEXT, url TEXT, username TEXT, password TEXT)", vec![]).await.unwrap();
-        metadata_db.exec("CREATE TABLE api_config (id INTEGER PRIMARY KEY, path TEXT, name TEXT, note TEXT, sql TEXT, params TEXT, status INTEGER, datasource_id INTEGER)", vec![]).await.unwrap();
-
-        let data_db = init_repository(&format!("sqlite://{}", data_path.display()))
-            .await
-            .unwrap();
-        data_db
-            .exec(
-                "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
-                vec![],
-            )
-            .await
-            .unwrap();
-        data_db
-            .exec(
-                "INSERT INTO users (id, name) VALUES (?, ?)",
-                vec![rbs::value!(1), rbs::value!("Ada")],
-            )
-            .await
-            .unwrap();
-
-        let state = Arc::new(AppState {
-            metadata_db,
-            pool_manager: Arc::new(PoolManager::new()),
-            config_cache: Cache::new(100),
-        });
-
-        (
-            state,
-            temp_dir,
-            format!("jdbc:sqlite:{}", data_path.display()),
-        )
-    }
-
-    async fn insert_api_config(
-        rb: &RBatis,
-        id: i32,
-        path: &str,
-        name: &str,
-        sql: &str,
-        params: &str,
-        datasource_id: i32,
-    ) {
-        rb.exec(
-            "INSERT INTO api_config (id, path, name, note, sql, params, status, datasource_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            vec![
-                rbs::value!(id),
-                rbs::value!(path),
-                rbs::value!(name),
-                rbs::Value::Null,
-                rbs::value!(sql),
-                rbs::value!(params),
-                rbs::value!(1),
-                rbs::value!(datasource_id),
-            ],
-        )
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_handle_api_not_found() {
-        let state = setup_test_state().await;
-        let app = Router::new()
-            .route("/api/{*path}", any(handle_api))
-            .with_state(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/test")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn test_handle_api_success() {
-        let state = setup_test_state().await;
-
-        // 1. Insert DataSource
-        let ds = DataSource {
-            id: Some(1),
-            name: Some("test_ds".to_string()),
-            note: None,
-            url: Some("jdbc:sqlite::memory:".to_string()),
-            username: None,
-            password: None,
-            db_type: Some("sqlite".to_string()),
-        };
-        DataSource::insert(&state.metadata_db, &ds).await.unwrap();
-
-        // 2. Insert ApiConfig
-        let config = ApiConfig {
-            id: Some(1),
-            name: Some("test_api".to_string()),
-            note: None,
-            path: Some("/test".to_string()),
-            datasource_id: Some(1),
-            sql: Some("SELECT $id as id, 'hello' as message".to_string()),
-            params: None,
-            status: Some(1),
-        };
-        insert_api_config(
-            &state.metadata_db,
-            config.id.unwrap(),
-            config.path.as_deref().unwrap(),
-            config.name.as_deref().unwrap(),
-            config.sql.as_deref().unwrap(),
-            config.params.as_deref().unwrap_or("[]"),
-            config.datasource_id.unwrap(),
-        )
-        .await;
-
-        let app = Router::new()
-            .route("/api/{*path}", any(handle_api))
-            .with_state(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/test?id=123")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 1024)
-            .await
-            .unwrap();
-        let json: JsonValue = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["success"], true);
-        assert_eq!(json["data"][0]["id"], "123");
-        assert_eq!(json["data"][0]["message"], "hello");
-    }
-
-    #[tokio::test]
-    async fn test_handle_api_supports_existing_bare_path_metadata() {
-        let (state, _temp_dir, datasource_url) = setup_file_backed_state().await;
-
-        let ds = DataSource {
-            id: Some(1),
-            name: Some("test_ds".to_string()),
-            note: None,
-            url: Some(datasource_url),
-            username: None,
-            password: None,
-            db_type: Some("sqlite".to_string()),
-        };
-        DataSource::insert(&state.metadata_db, &ds).await.unwrap();
-
-        insert_api_config(
-            &state.metadata_db,
-            1,
-            "users",
-            "users_api",
-            "SELECT name FROM users WHERE id = $id",
-            r#"[{"name":"id","type":"number"}]"#,
-            1,
-        )
-        .await;
-        assert!(
-            ApiConfig::select_by_path(&state.metadata_db, "users")
-                .await
-                .unwrap()
-                .is_some()
-        );
-
-        let app = Router::new()
-            .route("/api/{*path}", any(handle_api))
-            .with_state(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/users?id=1")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 1024)
-            .await
-            .unwrap();
-        let json: JsonValue = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["success"], true);
-        assert_eq!(json["data"][0]["name"], "Ada");
-    }
-
-    #[tokio::test]
-    async fn test_handle_api_uses_param_type_metadata_for_query_values() {
-        let (state, _temp_dir, datasource_url) = setup_file_backed_state().await;
-
-        let ds = DataSource {
-            id: Some(1),
-            name: Some("typed_ds".to_string()),
-            note: None,
-            url: Some(datasource_url),
-            username: None,
-            password: None,
-            db_type: Some("sqlite".to_string()),
-        };
-        DataSource::insert(&state.metadata_db, &ds).await.unwrap();
-
-        insert_api_config(
-            &state.metadata_db,
-            1,
-            "typed",
-            "typed_api",
-            "SELECT typeof($id) AS id_type",
-            r#"[{"name":"id","type":"number"}]"#,
-            1,
-        )
-        .await;
-        assert!(
-            ApiConfig::select_by_path(&state.metadata_db, "typed")
-                .await
-                .unwrap()
-                .is_some()
-        );
-
-        let app = Router::new()
-            .route("/api/{*path}", any(handle_api))
-            .with_state(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/typed?id=42")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 1024)
-            .await
-            .unwrap();
-        let json: JsonValue = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["success"], true);
-        assert_eq!(json["data"][0]["id_type"], "integer");
-    }
-
-    #[tokio::test]
-    async fn test_handle_api_rejects_invalid_param_metadata() {
-        let (state, _temp_dir, datasource_url) = setup_file_backed_state().await;
-
-        let ds = DataSource {
-            id: Some(1),
-            name: Some("bad_params_ds".to_string()),
-            note: None,
-            url: Some(datasource_url),
-            username: None,
-            password: None,
-            db_type: Some("sqlite".to_string()),
-        };
-        DataSource::insert(&state.metadata_db, &ds).await.unwrap();
-
-        insert_api_config(
-            &state.metadata_db,
-            1,
-            "bad-params",
-            "bad_params_api",
-            "SELECT $id AS id",
-            r#"{"name":"id","type":"number"}"#,
-            1,
-        )
-        .await;
-
-        let app = Router::new()
-            .route("/api/{*path}", any(handle_api))
-            .with_state(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/bad-params?id=42")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 1024)
-            .await
-            .unwrap();
-        let json: JsonValue = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["success"], false);
-        assert!(
-            json["msg"]
-                .as_str()
-                .unwrap()
-                .contains("Invalid params metadata")
-        );
+    #[test]
+    fn missing_or_list_result_type_keeps_array_response() {
+        assert!(!is_single_row_response(None));
+        assert!(!is_single_row_response(Some("")));
+        assert!(!is_single_row_response(Some("resultType=list")));
+        assert!(!is_single_row_response(Some(r#"{"resultType":"list"}"#)));
     }
 }

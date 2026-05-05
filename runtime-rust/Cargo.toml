@@ -6,12 +6,9 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = "0.8.9"
-tower-http = { version = "0.6.8", features = ["cors", "trace"] }
-rbatis = { version = "=4.9.2" }
-rbs = "=4.8.4"
-rbdc-sqlite = "=4.9.2"
-rbdc-mysql = "=4.9.2"
-rbdc-pg = "=4.9.2"
+tower-http = { version = "0.6.8", features = ["cors", "trace", "fs"] }
+sea-orm = { version = "1.1.20", features = ["sqlx-sqlite", "sqlx-mysql", "sqlx-postgres", "runtime-tokio-rustls", "with-json", "with-chrono"] }
+sea-query = "0.32.7"
 sqlparser = "0.43"
 moka = { version = "0.12", features = ["future"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -23,6 +20,8 @@ anyhow = "1.0"
 tower = { version = "0.5.3", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
 tempfile = "3"

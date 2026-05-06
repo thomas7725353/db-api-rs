@@ -26,6 +26,35 @@ export async function apiGet<T>(path: string): Promise<T> {
   return apiRequest<T>(path, { method: 'GET' });
 }
 
+export async function apiDownload(path: string, init: RequestInit = {}): Promise<Blob> {
+  const response = await fetch(path, init);
+  const contentType = response.headers.get('content-type') ?? '';
+  const shouldInspectJson = contentType.includes('application/json');
+  if (!response.ok) {
+    const text = await response.text();
+    const payload = parsePayload(text);
+    throw new ApiError(extractMessage(payload) ?? response.statusText, response.status, payload);
+  }
+  if (shouldInspectJson) {
+    const text = await response.text();
+    const payload = parsePayload(text);
+    if (isEnvelope(payload) && payload.success === false) {
+      throw new ApiError(payload.msg || 'Request failed', response.status, payload);
+    }
+    return new Blob([text], { type: contentType });
+  }
+  return response.blob();
+}
+
+export async function apiUpload<T>(path: string, file: File): Promise<T> {
+  const formData = new FormData();
+  formData.append('file', file);
+  return apiRequest<T>(path, {
+    method: 'POST',
+    body: formData,
+  });
+}
+
 export async function apiRequest<T>(path: string, init: RequestInit): Promise<T> {
   const response = await fetch(path, init);
   const text = await response.text();

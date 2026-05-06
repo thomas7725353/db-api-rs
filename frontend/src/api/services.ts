@@ -1,5 +1,5 @@
-import { apiGet, apiPost, apiRequest } from './client';
-import type { AccessLog, ApiConfig, ApiGroup, AppInfo, DataSource, TableColumn } from './types';
+import { apiDownload, apiGet, apiPost, apiRequest, apiUpload } from './client';
+import type { AccessLog, ApiConfig, ApiGroup, ApiTreeNode, AppInfo, DataSource, TableColumn } from './types';
 
 export const systemService = {
   version: () => apiPost<string>('/system/version'),
@@ -30,16 +30,39 @@ export const groupService = {
   remove: (id: string) => apiPost<unknown>(`/group/delete/${id}`),
 };
 
+function idsQuery(ids: string[]): string {
+  return `ids=${encodeURIComponent(ids.join(','))}`;
+}
+
+export function downloadBlob(blob: Blob, filename: string) {
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(link.href);
+}
+
 export const apiConfigService = {
   list: () => apiPost<ApiConfig[]>('/apiConfig/getAll'),
   search: (input: { keyword?: string; field?: string; groupId?: string }) =>
     apiPost<ApiConfig[]>('/apiConfig/search', input),
+  tree: () => apiPost<ApiTreeNode[]>('/apiConfig/getApiTree'),
   detail: (id: string) => apiPost<ApiConfig | null>(`/apiConfig/detail/${id}`),
   create: (input: ApiConfig) => apiPost<unknown>('/apiConfig/add', input),
   update: (input: ApiConfig) => apiPost<unknown>('/apiConfig/update', input),
   remove: (id: string) => apiPost<unknown>(`/apiConfig/delete/${id}`),
   online: (id: string) => apiPost<unknown>(`/apiConfig/online/${id}`),
   offline: (id: string) => apiPost<unknown>(`/apiConfig/offline/${id}`),
+  exportConfig: (ids: string[]) =>
+    apiDownload(`/apiConfig/downloadConfig?${idsQuery(ids)}`, { method: 'POST' }),
+  exportDocs: (ids: string[]) =>
+    apiDownload(`/apiConfig/apiDocs?${idsQuery(ids)}`, { method: 'POST' }),
+  importConfig: (file: File) => apiUpload<unknown>('/apiConfig/import', file),
+  exportGroups: (ids: string[]) =>
+    apiDownload(`/apiConfig/downloadGroupConfig?${idsQuery(ids)}`, { method: 'POST' }),
+  importGroups: (file: File) => apiUpload<unknown>('/apiConfig/importGroup', file),
 };
 
 export const appService = {

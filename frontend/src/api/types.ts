@@ -53,6 +53,17 @@ export interface ApiGroup {
   name?: string;
 }
 
+export interface ApiConfigExport {
+  api: ApiConfig[];
+  sql: ApiSql[];
+}
+
+export interface ApiTreeNode {
+  name: string;
+  id?: string;
+  children?: ApiConfig[];
+}
+
 export interface AppInfo {
   id?: string;
   secret?: string;

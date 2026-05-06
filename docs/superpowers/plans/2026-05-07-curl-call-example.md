@@ -23,7 +23,7 @@
 **Files:**
 - Create: `frontend/src/components/curlExample.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `frontend/src/components/curlExample.test.ts`:
 
@@ -112,7 +112,7 @@ describe('generateCurlCommand', () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused test to verify it fails**
+- [x] **Step 2: Run the focused test to verify it fails**
 
 Run:
 
@@ -123,7 +123,7 @@ npm run test -- --run src/components/curlExample.test.ts
 
 Expected: FAIL because `./curlExample` does not exist.
 
-- [ ] **Step 3: Commit the failing tests**
+- [x] **Step 3: Commit the failing tests**
 
 ```bash
 git add frontend/src/components/curlExample.test.ts
@@ -138,7 +138,7 @@ git commit -m "test: cover curl example generation"
 - Create: `frontend/src/components/curlExample.ts`
 - Test: `frontend/src/components/curlExample.test.ts`
 
-- [ ] **Step 1: Implement the generator**
+- [x] **Step 1: Implement the generator**
 
 Create `frontend/src/components/curlExample.ts`:
 
@@ -204,7 +204,7 @@ function shellQuote(value: string): string {
 }
 ```
 
-- [ ] **Step 2: Run the focused test**
+- [x] **Step 2: Run the focused test**
 
 Run:
 
@@ -215,7 +215,7 @@ npm run test -- --run src/components/curlExample.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 3: Commit the implementation**
+- [x] **Step 3: Commit the implementation**
 
 ```bash
 git add frontend/src/components/curlExample.ts frontend/src/components/curlExample.test.ts
@@ -230,7 +230,7 @@ git commit -m "feat: add curl example generator"
 - Modify: `frontend/src/pages/ApiRequestPage.tsx`
 - Uses: `frontend/src/components/curlExample.ts`
 
-- [ ] **Step 1: Update imports**
+- [x] **Step 1: Update imports**
 
 In `frontend/src/pages/ApiRequestPage.tsx`, change imports to include `CopyOutlined`, `Tabs`, and `generateCurlCommand`:
 
@@ -240,7 +240,7 @@ import { App, Button, Card, Empty, Form, Input, Space, Tabs, Tag, Typography } f
 import { generateCurlCommand } from '../components/curlExample';
 ```
 
-- [ ] **Step 2: Add URL and cURL derived values**
+- [x] **Step 2: Add URL and cURL derived values**
 
 Inside `ApiRequestPage`, after `const isJson = ...`, add:
 
@@ -255,7 +255,7 @@ Inside `ApiRequestPage`, after `const isJson = ...`, add:
   });
 ```
 
-- [ ] **Step 3: Add copy handler**
+- [x] **Step 3: Add copy handler**
 
 Inside `ApiRequestPage`, before `async function send()`, add:
 
@@ -270,7 +270,7 @@ Inside `ApiRequestPage`, before `async function send()`, add:
   }
 ```
 
-- [ ] **Step 4: Wrap request form and cURL example in tabs**
+- [x] **Step 4: Wrap request form and cURL example in tabs**
 
 Replace the current returned `<div className="mx-auto max-w-5xl space-y-4">...</div>` body with a layout that keeps the existing form in the first tab and adds the cURL textarea in the second tab:
 
@@ -335,7 +335,7 @@ Replace the current returned `<div className="mx-auto max-w-5xl space-y-4">...</
 
 When applying this step, move the existing JSON/form param editor JSX into the indicated location exactly as it exists today rather than rewriting it.
 
-- [ ] **Step 5: Run TypeScript build**
+- [x] **Step 5: Run TypeScript build**
 
 Run:
 
@@ -346,7 +346,7 @@ npm run build
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the UI integration**
+- [x] **Step 6: Commit the UI integration**
 
 ```bash
 git add frontend/src/pages/ApiRequestPage.tsx
@@ -360,7 +360,7 @@ git commit -m "feat: restore curl call example tab"
 **Files:**
 - Verify all changed frontend files.
 
-- [ ] **Step 1: Run all frontend tests**
+- [x] **Step 1: Run all frontend tests**
 
 Run:
 
@@ -371,7 +371,7 @@ npm run test -- --run
 
 Expected: PASS.
 
-- [ ] **Step 2: Run frontend build**
+- [x] **Step 2: Run frontend build**
 
 Run:
 
@@ -382,7 +382,7 @@ npm run build
 
 Expected: PASS.
 
-- [ ] **Step 3: Check git status**
+- [x] **Step 3: Check git status**
 
 Run:
 
@@ -392,7 +392,7 @@ git status --short --branch
 
 Expected: only known unrelated local files may remain, such as `data.db-shm`; all cURL feature files are committed.
 
-- [ ] **Step 4: Push main**
+- [x] **Step 4: Push main**
 
 Run:
 
@@ -415,4 +415,3 @@ Spec coverage:
 - Verification commands are covered in Task 4.
 
 No placeholders remain. The only intentionally high-level instruction is to move existing JSX unchanged inside the new tab structure so current request editing behavior is preserved without duplicating the entire existing component body in this plan.
-

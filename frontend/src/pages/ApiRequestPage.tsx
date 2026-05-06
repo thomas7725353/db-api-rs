@@ -46,7 +46,7 @@ export default function ApiRequestPage() {
 
   async function copyCurl() {
     try {
-      await navigator.clipboard.writeText(curlCommand);
+      await copyText(curlCommand);
       message.success('cURL 已复制');
     } catch (error) {
       message.error(error instanceof Error ? error.message : '复制 cURL 失败');
@@ -252,4 +252,27 @@ function coerceValue(value: string, type: string | undefined): string | number {
   if (normalized === 'bigint') return Number.parseInt(trimmed, 10);
   if (normalized === 'double') return Number.parseFloat(trimmed);
   return value;
+}
+
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.top = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+
+  try {
+    if (!document.execCommand('copy')) {
+      throw new Error('复制 cURL 失败');
+    }
+  } finally {
+    document.body.removeChild(textarea);
+  }
 }

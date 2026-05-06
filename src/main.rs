@@ -15,10 +15,12 @@ mod view_sql;
 use crate::db::DbPoolManager;
 use axum::{
     Router,
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
     routing::{any, get, post},
 };
 use std::sync::Arc;
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::services::ServeDir;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -124,11 +126,53 @@ async fn main() -> anyhow::Result<()> {
             "/table/getAllColumns",
             post(basic_handler::table_get_all_columns),
         )
-        .fallback_service(ServeDir::new("static").fallback(ServeFile::new("static/index.html")))
+        .nest_service("/assets", ServeDir::new("static/assets"))
+        .fallback(spa_index)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8520").await?;
     info!("db-api-rs listening on :8520");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn spa_index() -> Response {
+    match tokio::fs::read_to_string("static/index.html").await {
+        Ok(html) => index_response(html),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to read static/index.html: {error}"),
+        )
+            .into_response(),
+    }
+}
+
+fn index_response(html: String) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store, no-cache, must-revalidate"),
+            (header::PRAGMA, "no-cache"),
+            (header::EXPIRES, "0"),
+        ],
+        html,
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::header;
+
+    #[test]
+    fn index_response_disables_html_cache() {
+        let response = index_response("<!doctype html>".to_string());
+
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store, no-cache, must-revalidate"
+        );
+        assert_eq!(response.headers().get(header::PRAGMA).unwrap(), "no-cache");
+    }
 }

@@ -1,31 +1,31 @@
 ---
 name: dbapi-demo-crud
-description: Use when seeding or verifying the local Rust standalone db-api Demo CRUD group, demo_items SQLite table, private CRUD/list APIs, app authorization, token generation, authenticated curl calls, and access-log monitor data.
+description: Use when seeding or verifying the local Rust standalone db-api-rs Demo CRUD group, demo_items SQLite table, private CRUD/list APIs, app authorization, token generation, authenticated curl calls, and access-log monitor data.
 ---
 
-# DBApi Demo CRUD
+# db-api-rs Demo CRUD
 
 ## Purpose
 
-Use this skill to recreate the known-good demo API set for the Rust standalone db-api runtime. The demo uses the repository root `data.db` as both metadata database and example business SQLite database. The seeded APIs are private (`previlege=0`), so curl verification must create an app, authorize it to `demo_crud_group`, generate a token, then pass `Authorization: $TOKEN`.
+Use this skill to recreate the known-good demo API set for the Rust standalone db-api-rs runtime. The demo uses the repository root `data.db` as both metadata database and example business SQLite database. The seeded APIs are private (`previlege=0`), so curl verification must create an app, authorize it to `demo_crud_group`, generate a token, then pass `Authorization: $TOKEN`.
 
 ## Files
 
 - Seed SQL: `skills/dbapi-demo-crud/scripts/seed_demo_api.sql`
-- Runtime seed copy: `runtime-rust/seed_demo_api.sql`
+- Runtime seed copy: `seed_demo_api.sql`
 - Metadata DB: `data.db`
-- Rust runtime: `runtime-rust`
+- Rust runtime: repository root
 
 ## Workflow
 
-1. Confirm the current working directory is `/Users/andy/RustroverProjects/db-api`.
+1. Confirm the current working directory is the repository root.
 2. Apply the seed SQL:
 
 ```bash
 rtk sqlite3 data.db < skills/dbapi-demo-crud/scripts/seed_demo_api.sql
 ```
 
-3. If `runtime-rust` is already running, restart it so the config cache is clean. The service normally listens on `127.0.0.1:8520`.
+3. If `db-api-rs` is already running, restart it so the config cache is clean. The service normally listens on `127.0.0.1:8520`.
 4. Verify the seed result:
 
 ```bash
@@ -163,7 +163,7 @@ rtk cargo test
 rtk cargo check
 ```
 
-Use `workdir=/Users/andy/RustroverProjects/db-api/runtime-rust` for Rust commands.
+Use the repository root for Rust commands.
 
 Then verify with curl:
 

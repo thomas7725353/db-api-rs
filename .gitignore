@@ -2,10 +2,10 @@
 target/
 *.iml
 logs/
-src/main/resources/static
 
 # Added by cargo
 
 /target
 node_modules/
-runtime-rust/frontend/tsconfig.tsbuildinfo
+frontend/node_modules/
+frontend/tsconfig.tsbuildinfo

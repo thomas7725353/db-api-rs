@@ -2,7 +2,7 @@ services:
   db-api-rs:
     build:
       context: .
-      dockerfile: runtime-rust/Dockerfile
+      dockerfile: Dockerfile
     environment:
       RUST_LOG: info
       DB_API_METADATA_URL: sqlite:///data/data.db

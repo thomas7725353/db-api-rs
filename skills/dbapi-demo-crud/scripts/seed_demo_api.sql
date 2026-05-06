@@ -37,7 +37,7 @@ VALUES (
   '当前 SQLite 示例库',
   '使用当前 data.db 作为示例业务库',
   'sqlite',
-  'jdbc:sqlite:/Users/andy/RustroverProjects/db-api/data.db',
+  'sqlite://data.db',
   '',
   '',
   'org.sqlite.JDBC',

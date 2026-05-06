@@ -1,4 +1,21 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: dbapi_demo
+      POSTGRES_USER: dbapi
+      POSTGRES_PASSWORD: dbapi_pass
+    ports:
+      - "15432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbapi -d dbapi_demo"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   db-api-rs:
     build:
       context: .
@@ -10,3 +27,9 @@ services:
       - "8520:8520"
     volumes:
       - ./data.db:/data/data.db
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pg-data:

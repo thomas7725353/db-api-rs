@@ -10,6 +10,7 @@ mod query_dsl;
 mod repository;
 mod response;
 mod sql_engine;
+mod view_sql;
 
 use crate::db::DbPoolManager;
 use axum::{

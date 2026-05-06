@@ -57,6 +57,20 @@ async fn main() -> anyhow::Result<()> {
             "/apiConfig/getApiTree",
             any(api_config_handler::get_api_tree),
         )
+        .route(
+            "/apiConfig/downloadConfig",
+            post(api_config_handler::download_config),
+        )
+        .route("/apiConfig/import", post(api_config_handler::import_config))
+        .route(
+            "/apiConfig/downloadGroupConfig",
+            post(api_config_handler::download_group_config),
+        )
+        .route(
+            "/apiConfig/importGroup",
+            post(api_config_handler::import_group),
+        )
+        .route("/apiConfig/apiDocs", post(api_config_handler::api_docs))
         .route("/apiConfig/context", any(api_config_handler::context))
         .route("/apiConfig/detail/{id}", any(api_config_handler::detail))
         .route("/apiConfig/delete/{id}", any(api_config_handler::delete))

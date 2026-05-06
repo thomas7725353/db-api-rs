@@ -1,7 +1,9 @@
 use crate::db::{self, DbConn};
-use crate::model::{AccessLog, ApiAlarm, ApiConfig, ApiGroup, ApiSql, AppInfo, DataSource, User};
+use crate::model::{
+    AccessLog, ApiAlarm, ApiConfig, ApiConfigExport, ApiGroup, ApiSql, AppInfo, DataSource, User,
+};
 use chrono::Local;
-use sea_orm::{ConnectionTrait, FromQueryResult, QueryResult};
+use sea_orm::{ConnectionTrait, DatabaseTransaction, FromQueryResult, QueryResult, TransactionTrait};
 use sea_query::Value;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -60,20 +62,17 @@ where
 }
 
 async fn count_first(db: &DbConn, sql: &str, args: Vec<Value>) -> i64 {
-    db::query_one_json(db, sql, args)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|row| match row {
-            JsonValue::Object(map) => map.into_values().next(),
-            other => Some(other),
-        })
-        .and_then(|value| {
-            value
-                .as_i64()
-                .or_else(|| value.as_u64().and_then(|raw| i64::try_from(raw).ok()))
-                .or_else(|| value.as_str()?.parse::<i64>().ok())
-        })
+    #[derive(FromQueryResult)]
+    struct CountRow {
+        count: i64,
+    }
+
+    let Ok(rows) = db.conn.query_all(db.statement(sql, args)).await else {
+        return 0;
+    };
+    rows.first()
+        .and_then(|row| CountRow::from_query_result(row, "").ok())
+        .map(|row| row.count)
         .unwrap_or(0)
 }
 
@@ -168,6 +167,244 @@ pub async fn select_all_api_configs(db: &DbConn) -> anyhow::Result<Vec<ApiConfig
     Ok(configs)
 }
 
+pub async fn export_api_configs(db: &DbConn, ids: &[String]) -> anyhow::Result<ApiConfigExport> {
+    let mut api = Vec::new();
+    let mut sql = Vec::new();
+    for id in ids {
+        if let Some(mut config) = select_api_by_id(db, id).await? {
+            let sql_rows = select_api_sqls(db, id).await?;
+            sql.extend(sql_rows);
+            config.sql_list = Vec::new();
+            api.push(config);
+        }
+    }
+    Ok(ApiConfigExport { api, sql })
+}
+
+pub async fn select_groups_by_ids(db: &DbConn, ids: &[String]) -> anyhow::Result<Vec<ApiGroup>> {
+    let mut groups = Vec::new();
+    for id in ids {
+        if let Some(group) = db::query_one_as(
+            db,
+            "select id, name from api_group where id = ?",
+            vec![v(id)],
+        )
+        .await?
+        {
+            groups.push(group);
+        }
+    }
+    Ok(groups)
+}
+
+pub async fn import_groups(db: &DbConn, groups: &[ApiGroup]) -> anyhow::Result<()> {
+    validate_import_groups(db, groups).await?;
+    let txn = db.conn.begin().await?;
+    for group in groups {
+        execute_tx(
+            db,
+            &txn,
+            "insert into api_group (id, name) values (?, ?)",
+            vec![v(&group.id), v(&group.name)],
+        )
+        .await?;
+    }
+    txn.commit().await?;
+    Ok(())
+}
+
+pub async fn import_api_configs(db: &DbConn, bundle: &ApiConfigExport) -> anyhow::Result<()> {
+    validate_import_api_configs(db, bundle).await?;
+    let txn = db.conn.begin().await?;
+    for config in &bundle.api {
+        execute_tx(
+            db,
+            &txn,
+            "insert into api_config (id, path, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            vec![
+                v(&config.id),
+                v(&config.path),
+                v(&config.name),
+                v(&config.note),
+                v(&config.params),
+                v(config.status),
+                v(&config.datasource_id),
+                v(config.previlege),
+                v(&config.group_id),
+                v(&config.cache_plugin),
+                v(&config.cache_plugin_params),
+                v(&config.create_time),
+                v(&config.update_time),
+                v(&config.content_type),
+                v(config.open_trans),
+                v(&config.json_param),
+            ],
+        )
+        .await?;
+    }
+    for sql in &bundle.sql {
+        execute_tx(
+            db,
+            &txn,
+            "insert into api_sql (api_id, sql_text, transform_plugin, transform_plugin_params) values (?, ?, ?, ?)",
+            vec![
+                v(&sql.api_id),
+                v(&sql.sql_text),
+                v(&sql.transform_plugin),
+                v(&sql.transform_plugin_params),
+            ],
+        )
+        .await?;
+    }
+    txn.commit().await?;
+    Ok(())
+}
+
+async fn execute_tx(
+    db: &DbConn,
+    txn: &DatabaseTransaction,
+    sql: &str,
+    args: Vec<Value>,
+) -> anyhow::Result<u64> {
+    let result = txn.execute(db.statement(sql, args)).await?;
+    Ok(result.rows_affected())
+}
+
+async fn validate_import_groups(db: &DbConn, groups: &[ApiGroup]) -> anyhow::Result<()> {
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut seen_names = std::collections::HashSet::new();
+    for group in groups {
+        let id = group.id.as_deref().unwrap_or("").trim();
+        let name = group.name.as_deref().unwrap_or("").trim();
+        if id.is_empty() {
+            anyhow::bail!("group id is required");
+        }
+        if name.is_empty() {
+            anyhow::bail!("group name is required");
+        }
+        if !seen_ids.insert(id.to_string()) {
+            anyhow::bail!("duplicate group id in import file: {}", id);
+        }
+        if !seen_names.insert(name.to_string()) {
+            anyhow::bail!("duplicate group name in import file: {}", name);
+        }
+        if count_first(
+            db,
+            "select count(1) as count from api_group where id = ?",
+            vec![v(id)],
+        )
+        .await
+            > 0
+        {
+            anyhow::bail!("group id already exists: {}", id);
+        }
+        if count_first(
+            db,
+            "select count(1) as count from api_group where name = ?",
+            vec![v(name)],
+        )
+        .await
+            > 0
+        {
+            anyhow::bail!("group name already exists: {}", name);
+        }
+    }
+    Ok(())
+}
+
+async fn validate_import_api_configs(db: &DbConn, bundle: &ApiConfigExport) -> anyhow::Result<()> {
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut seen_paths = std::collections::HashSet::new();
+    let imported_ids = bundle
+        .api
+        .iter()
+        .filter_map(|config| config.id.as_deref().map(str::trim))
+        .filter(|id| !id.is_empty())
+        .collect::<std::collections::HashSet<_>>();
+
+    for config in &bundle.api {
+        let id = config.id.as_deref().unwrap_or("").trim();
+        let path = config.path.as_deref().unwrap_or("").trim();
+        if id.is_empty() {
+            anyhow::bail!("api id is required");
+        }
+        if path.is_empty() {
+            anyhow::bail!("api path is required");
+        }
+        if !seen_ids.insert(id.to_string()) {
+            anyhow::bail!("duplicate api id in import file: {}", id);
+        }
+        if !seen_paths.insert(path.to_string()) {
+            anyhow::bail!("duplicate api path in import file: {}", path);
+        }
+        if count_first(
+            db,
+            "select count(1) as count from api_config where id = ?",
+            vec![v(id)],
+        )
+        .await
+            > 0
+        {
+            anyhow::bail!("api id already exists: {}", id);
+        }
+        if count_first(
+            db,
+            "select count(1) as count from api_config where path = ?",
+            vec![v(path)],
+        )
+        .await
+            > 0
+        {
+            anyhow::bail!("api path already exists: {}", path);
+        }
+        if let Some(group_id) = config
+            .group_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if count_first(
+                db,
+                "select count(1) as count from api_group where id = ?",
+                vec![v(group_id)],
+            )
+            .await
+                == 0
+            {
+                anyhow::bail!("api group does not exist: {}", group_id);
+            }
+        }
+        if let Some(datasource_id) = config
+            .datasource_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if count_first(
+                db,
+                "select count(1) as count from datasource where id = ?",
+                vec![v(datasource_id)],
+            )
+            .await
+                == 0
+            {
+                anyhow::bail!("datasource does not exist: {}", datasource_id);
+            }
+        }
+    }
+
+    for sql in &bundle.sql {
+        let api_id = sql.api_id.as_deref().unwrap_or("").trim();
+        if api_id.is_empty() {
+            anyhow::bail!("sql api_id is required");
+        }
+        if !imported_ids.contains(api_id) {
+            anyhow::bail!("sql references unknown api id: {}", api_id);
+        }
+    }
+    Ok(())
+}
+
 pub async fn search_api_configs(
     db: &DbConn,
     keyword: Option<&str>,
@@ -195,6 +432,10 @@ pub async fn search_api_configs(
             }
             "path" => {
                 sql.push_str(" and path like ?");
+                args.push(v(like));
+            }
+            "note" => {
+                sql.push_str(" and note like ?");
                 args.push(v(like));
             }
             _ => {
@@ -820,7 +1061,231 @@ mod tests {
         assert_eq!(groups, vec!["group-1".to_string()]);
     }
 
+    #[tokio::test]
+    async fn export_api_configs_returns_old_compatible_bundle() {
+        let db = init_repository("sqlite::memory:").await.unwrap();
+        create_api_config_test_tables(&db).await;
+        db::execute(
+            &db,
+            "insert into api_group (id, name) values (?, ?)",
+            vec![v("group-1"), v("demo")],
+        )
+        .await
+        .unwrap();
+        db::execute(
+            &db,
+            "insert into datasource (id, name, type, url, username, password, driver) values (?, ?, ?, ?, ?, ?, ?)",
+            vec![
+                v("ds-1"),
+                v("SQLite"),
+                v("sqlite"),
+                v("sqlite::memory:"),
+                v(""),
+                v(""),
+                v("org.sqlite.JDBC"),
+            ],
+        )
+        .await
+        .unwrap();
+        db::execute(
+            &db,
+            "insert into api_config (id, path, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            vec![
+                v("api-1"),
+                v("/demo/items/get"),
+                v("get"),
+                v(""),
+                v("[]"),
+                v(1),
+                v("ds-1"),
+                v(0),
+                v("group-1"),
+                v(Option::<String>::None),
+                v(Option::<String>::None),
+                v("2026-05-06 00:00:00"),
+                v("2026-05-06 00:00:00"),
+                v("application/x-www-form-urlencoded"),
+                v(0),
+                v(Option::<String>::None),
+            ],
+        )
+        .await
+        .unwrap();
+        db::execute(
+            &db,
+            "insert into api_sql (api_id, sql_text, transform_plugin, transform_plugin_params) values (?, ?, ?, ?)",
+            vec![v("api-1"), v("select 1"), v("sql"), v("")],
+        )
+        .await
+        .unwrap();
+
+        let bundle = export_api_configs(&db, &["api-1".to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(bundle.api.len(), 1);
+        assert_eq!(bundle.sql.len(), 1);
+        assert!(bundle.api[0].sql_list.is_empty());
+        assert_eq!(bundle.sql[0].api_id.as_deref(), Some("api-1"));
+    }
+
+    #[tokio::test]
+    async fn import_api_configs_rejects_duplicate_path() {
+        let db = init_repository("sqlite::memory:").await.unwrap();
+        create_api_config_test_tables(&db).await;
+        db::execute(
+            &db,
+            "insert into api_group (id, name) values (?, ?)",
+            vec![v("group-1"), v("demo")],
+        )
+        .await
+        .unwrap();
+        db::execute(
+            &db,
+            "insert into datasource (id, name, type, url, username, password, driver) values (?, ?, ?, ?, ?, ?, ?)",
+            vec![
+                v("ds-1"),
+                v("SQLite"),
+                v("sqlite"),
+                v("sqlite::memory:"),
+                v(""),
+                v(""),
+                v("org.sqlite.JDBC"),
+            ],
+        )
+        .await
+        .unwrap();
+        db::execute(
+            &db,
+            "insert into api_config (id, path, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            vec![
+                v("existing"),
+                v("/demo/items/get"),
+                v("existing"),
+                v(""),
+                v("[]"),
+                v(1),
+                v("ds-1"),
+                v(0),
+                v("group-1"),
+                v(Option::<String>::None),
+                v(Option::<String>::None),
+                v("2026-05-06 00:00:00"),
+                v("2026-05-06 00:00:00"),
+                v("application/x-www-form-urlencoded"),
+                v(0),
+                v(Option::<String>::None),
+            ],
+        )
+        .await
+        .unwrap();
+        let bundle = ApiConfigExport {
+            api: vec![ApiConfig {
+                id: Some("api-2".to_string()),
+                name: Some("new".to_string()),
+                note: Some(String::new()),
+                path: Some("/demo/items/get".to_string()),
+                datasource_id: Some("ds-1".to_string()),
+                sql_list: Vec::new(),
+                params: Some("[]".to_string()),
+                status: Some(1),
+                previlege: Some(0),
+                group_id: Some("group-1".to_string()),
+                cache_plugin: None,
+                cache_plugin_params: None,
+                create_time: Some("2026-05-06 00:00:00".to_string()),
+                update_time: Some("2026-05-06 00:00:00".to_string()),
+                content_type: Some("application/x-www-form-urlencoded".to_string()),
+                open_trans: Some(0),
+                json_param: None,
+                alarm_plugin: None,
+                alarm_plugin_param: None,
+            }],
+            sql: vec![ApiSql {
+                id: None,
+                api_id: Some("api-2".to_string()),
+                sql_text: Some("select 1".to_string()),
+                transform_plugin: Some("sql".to_string()),
+                transform_plugin_params: Some(String::new()),
+            }],
+        };
+
+        let error = import_api_configs(&db, &bundle).await.unwrap_err();
+        assert!(error.to_string().contains("api path already exists"));
+    }
+
+    #[tokio::test]
+    async fn search_api_configs_filters_note_field_only() {
+        let db = init_repository("sqlite::memory:").await.unwrap();
+        create_api_config_test_tables(&db).await;
+        for (id, path, name, note) in [
+            ("api-note", "/items/by-note", "plain", "needle"),
+            ("api-name", "/items/other", "needle", "plain"),
+        ] {
+            db::execute(
+                &db,
+                "insert into api_config (id, path, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                vec![
+                    v(id),
+                    v(path),
+                    v(name),
+                    v(note),
+                    v("[]"),
+                    v(1),
+                    v(Option::<String>::None),
+                    v(0),
+                    v(Option::<String>::None),
+                    v(Option::<String>::None),
+                    v(Option::<String>::None),
+                    v("2026-05-06 00:00:00"),
+                    v("2026-05-06 00:00:00"),
+                    v("application/x-www-form-urlencoded"),
+                    v(0),
+                    v(Option::<String>::None),
+                ],
+            )
+            .await
+            .unwrap();
+        }
+
+        let configs = search_api_configs(&db, Some("needle"), Some("note"), None)
+            .await
+            .unwrap();
+
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].id.as_deref(), Some("api-note"));
+    }
+
     async fn create_api_config_test_tables(db: &DbConn) {
+        db::execute(
+            db,
+            "create table datasource (
+                id text primary key,
+                name text,
+                note text,
+                type text,
+                url text,
+                username text,
+                password text,
+                driver text,
+                table_sql text,
+                create_time text,
+                update_time text
+            )",
+            vec![],
+        )
+        .await
+        .unwrap();
+        db::execute(
+            db,
+            "create table api_group (
+                id text primary key,
+                name text
+            )",
+            vec![],
+        )
+        .await
+        .unwrap();
         db::execute(
             db,
             "create table api_config (

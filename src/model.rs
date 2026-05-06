@@ -90,6 +90,14 @@ pub struct ApiGroup {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApiConfigExport {
+    #[serde(default)]
+    pub api: Vec<ApiConfig>,
+    #[serde(default)]
+    pub sql: Vec<ApiSql>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct User {
     pub id: Option<i32>,
     pub username: Option<String>,

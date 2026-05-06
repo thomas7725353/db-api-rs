@@ -1,15 +1,15 @@
 use crate::db;
 use crate::form::parse_request_body;
 use crate::handler::AppState;
-use crate::model::{ApiConfig, ApiSql};
+use crate::model::{ApiConfig, ApiConfigExport, ApiGroup, ApiSql};
 use crate::repository;
 use crate::response::{dto_data, dto_fail, dto_ok};
 use axum::{
     Json,
     body::Body,
-    extract::{Path, Query, State},
-    http::Request,
-    response::IntoResponse,
+    extract::{Multipart, Path, Query, State},
+    http::{HeaderValue, Request, header},
+    response::{IntoResponse, Response},
 };
 use serde::Deserialize;
 use serde_json::{Value as JsonValue, json};
@@ -89,6 +89,11 @@ pub struct SearchQuery {
     field: Option<String>,
     #[serde(rename = "groupId")]
     group_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IdsQuery {
+    ids: Option<String>,
 }
 
 pub async fn search(
@@ -190,6 +195,93 @@ pub async fn get_api_tree(State(state): State<Arc<AppState>>) -> impl IntoRespon
         .collect::<Vec<_>>();
     result.sort_by_key(|item| item["name"].as_str().unwrap_or("").to_string());
     Json(json!(result)).into_response()
+}
+
+pub async fn download_config(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<IdsQuery>,
+) -> impl IntoResponse {
+    let ids = split_ids(query.ids.as_deref());
+    match repository::export_api_configs(&state.metadata_db, &ids).await {
+        Ok(bundle) => match serde_json::to_string_pretty(&bundle) {
+            Ok(content) => {
+                download_text("api_config.json", "application/json", content).into_response()
+            }
+            Err(e) => dto_fail(e.to_string()).into_response(),
+        },
+        Err(e) => dto_fail(e.to_string()).into_response(),
+    }
+}
+
+pub async fn import_config(
+    State(state): State<Arc<AppState>>,
+    multipart: Multipart,
+) -> impl IntoResponse {
+    let value = match read_json_upload(multipart).await {
+        Ok(value) => value,
+        Err(e) => return dto_fail(e).into_response(),
+    };
+    let bundle = match serde_json::from_value::<ApiConfigExport>(value) {
+        Ok(bundle) => bundle,
+        Err(e) => return dto_fail(format!("Invalid API config JSON: {}", e)).into_response(),
+    };
+    match repository::import_api_configs(&state.metadata_db, &bundle).await {
+        Ok(_) => {
+            state.config_cache.invalidate_all();
+            dto_ok::<JsonValue>("Import Success", None).into_response()
+        }
+        Err(e) => dto_fail(e.to_string()).into_response(),
+    }
+}
+
+pub async fn download_group_config(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<IdsQuery>,
+) -> impl IntoResponse {
+    let ids = split_ids(query.ids.as_deref());
+    match repository::select_groups_by_ids(&state.metadata_db, &ids).await {
+        Ok(groups) => match serde_json::to_string_pretty(&groups) {
+            Ok(content) => {
+                download_text("api_group_config.json", "application/json", content).into_response()
+            }
+            Err(e) => dto_fail(e.to_string()).into_response(),
+        },
+        Err(e) => dto_fail(e.to_string()).into_response(),
+    }
+}
+
+pub async fn import_group(
+    State(state): State<Arc<AppState>>,
+    multipart: Multipart,
+) -> impl IntoResponse {
+    let value = match read_json_upload(multipart).await {
+        Ok(value) => value,
+        Err(e) => return dto_fail(e).into_response(),
+    };
+    let groups = match serde_json::from_value::<Vec<ApiGroup>>(value) {
+        Ok(groups) => groups,
+        Err(e) => return dto_fail(format!("Invalid API group JSON: {}", e)).into_response(),
+    };
+    match repository::import_groups(&state.metadata_db, &groups).await {
+        Ok(_) => dto_ok::<JsonValue>("Import Success", None).into_response(),
+        Err(e) => dto_fail(e.to_string()).into_response(),
+    }
+}
+
+pub async fn api_docs(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<IdsQuery>,
+) -> impl IntoResponse {
+    let ids = split_ids(query.ids.as_deref());
+    match repository::export_api_configs(&state.metadata_db, &ids).await {
+        Ok(bundle) => download_text(
+            "API Doc.md",
+            "text/markdown; charset=utf-8",
+            render_api_docs(&bundle),
+        )
+        .into_response(),
+        Err(e) => dto_fail(e.to_string()).into_response(),
+    }
 }
 
 pub async fn parse_param(request: Request<Body>) -> impl IntoResponse {
@@ -325,6 +417,81 @@ fn get_i32(input: &JsonValue, key: &str) -> Option<i32> {
             .and_then(|raw| i32::try_from(raw).ok())
             .or_else(|| value.as_str()?.parse::<i32>().ok())
     })
+}
+
+async fn read_json_upload(mut multipart: Multipart) -> Result<JsonValue, String> {
+    while let Some(field) = multipart.next_field().await.map_err(|e| e.to_string())? {
+        let bytes = field.bytes().await.map_err(|e| e.to_string())?;
+        if bytes.is_empty() {
+            continue;
+        }
+        return serde_json::from_slice::<JsonValue>(&bytes).map_err(|e| e.to_string());
+    }
+    Err("file is required".to_string())
+}
+
+fn split_ids(ids: Option<&str>) -> Vec<String> {
+    ids.unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn download_text(filename: &str, content_type: &'static str, content: String) -> Response {
+    let mut response = content.into_response();
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    let disposition = HeaderValue::from_str(&format!("attachment; filename=\"{}\"", filename))
+        .unwrap_or_else(|_| HeaderValue::from_static("attachment"));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_DISPOSITION, disposition);
+    response
+}
+
+fn render_api_docs(bundle: &ApiConfigExport) -> String {
+    let mut markdown = String::from("# 接口文档\n---\n");
+    for api in &bundle.api {
+        markdown.push_str(&format!(
+            "## {}\n- 接口地址： /api/{}\n- 接口备注：{}\n- Content-Type：{}\n",
+            api.name.as_deref().unwrap_or(""),
+            api.path.as_deref().unwrap_or("").trim_start_matches('/'),
+            api.note.as_deref().unwrap_or(""),
+            api.content_type.as_deref().unwrap_or("")
+        ));
+        markdown.push_str("- 请求参数：\n");
+        if api.content_type.as_deref() == Some("application/json") {
+            markdown.push_str("```json\n");
+            markdown.push_str(api.json_param.as_deref().unwrap_or("{}"));
+            markdown.push_str("\n```\n");
+        } else {
+            markdown.push_str(&render_param_table(api.params.as_deref().unwrap_or("[]")));
+        }
+        markdown.push_str("\n---\n");
+    }
+    markdown.push_str(&format!("\n导出日期：{}", repository::now_string()));
+    markdown
+}
+
+fn render_param_table(raw: &str) -> String {
+    let params = serde_json::from_str::<Vec<JsonValue>>(raw).unwrap_or_default();
+    if params.is_empty() {
+        return "无参数\n".to_string();
+    }
+    let mut table =
+        String::from("\n| 参数名称 | 参数类型 | 参数说明 |\n| :----: | :----: | :----: |\n");
+    for param in params {
+        table.push_str(&format!(
+            "|{}|{}|{}|\n",
+            param.get("name").and_then(JsonValue::as_str).unwrap_or(""),
+            param.get("type").and_then(JsonValue::as_str).unwrap_or(""),
+            param.get("note").and_then(JsonValue::as_str).unwrap_or("")
+        ));
+    }
+    table
 }
 
 fn extract_dollar_params(sql: &str) -> Vec<String> {

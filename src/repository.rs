@@ -158,12 +158,14 @@ pub async fn count_api_by_datasource(db: &DbConn, datasource_id: &str) -> i64 {
 }
 
 pub async fn select_all_api_configs(db: &DbConn) -> anyhow::Result<Vec<ApiConfig>> {
-    db::query_as(
+    let mut configs = db::query_as(
         db,
         &format!("select {API_COLUMNS} from api_config order by update_time desc"),
         vec![],
     )
-    .await
+    .await?;
+    fill_api_children_for_configs(db, &mut configs).await?;
+    Ok(configs)
 }
 
 pub async fn search_api_configs(
@@ -204,7 +206,9 @@ pub async fn search_api_configs(
         }
     }
     sql.push_str(" order by update_time desc");
-    db::query_as(db, &sql, args).await
+    let mut configs = db::query_as(db, &sql, args).await?;
+    fill_api_children_for_configs(db, &mut configs).await?;
+    Ok(configs)
 }
 
 pub async fn select_api_by_id(db: &DbConn, id: &str) -> anyhow::Result<Option<ApiConfig>> {
@@ -245,6 +249,16 @@ pub async fn fill_api_children(db: &DbConn, config: &mut ApiConfig) -> anyhow::R
     if let Some(alarm) = alarms.into_iter().next() {
         config.alarm_plugin = alarm.alarm_plugin;
         config.alarm_plugin_param = alarm.alarm_plugin_param;
+    }
+    Ok(())
+}
+
+async fn fill_api_children_for_configs(
+    db: &DbConn,
+    configs: &mut [ApiConfig],
+) -> anyhow::Result<()> {
+    for config in configs {
+        fill_api_children(db, config).await?;
     }
     Ok(())
 }
@@ -740,6 +754,57 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn select_all_api_configs_includes_sql_list() {
+        let db = init_repository("sqlite::memory:").await.unwrap();
+        create_api_config_test_tables(&db).await;
+        db::execute(
+            &db,
+            "insert into api_config (id, path, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            vec![
+                v("api-1"),
+                v("/demo/view"),
+                v("View SQL Demo"),
+                v(""),
+                v("[]"),
+                v(1),
+                v("ds-1"),
+                v(1),
+                v("group-1"),
+                v(Option::<String>::None),
+                v(Option::<String>::None),
+                v("2026-05-06 00:00:00"),
+                v("2026-05-06 00:00:00"),
+                v("application/x-www-form-urlencoded"),
+                v(0),
+                v(Option::<String>::None),
+            ],
+        )
+        .await
+        .unwrap();
+        db::execute(
+            &db,
+            "insert into api_sql (api_id, sql_text, transform_plugin, transform_plugin_params) values (?, ?, ?, ?)",
+            vec![
+                v("api-1"),
+                v("select [[ columns | ident_list ]] from demo_items"),
+                v("viewSql"),
+                v("resultType=list"),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let configs = select_all_api_configs(&db).await.unwrap();
+
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].sql_list.len(), 1);
+        assert_eq!(
+            configs[0].sql_list[0].transform_plugin.as_deref(),
+            Some("viewSql")
+        );
+    }
+
+    #[tokio::test]
     async fn select_app_auth_groups_decodes_group_id_rows() {
         let db = init_repository("sqlite::memory:").await.unwrap();
         db::execute(
@@ -753,5 +818,56 @@ mod tests {
         let groups = select_app_auth_groups(&db, "app-1").await.unwrap();
 
         assert_eq!(groups, vec!["group-1".to_string()]);
+    }
+
+    async fn create_api_config_test_tables(db: &DbConn) {
+        db::execute(
+            db,
+            "create table api_config (
+                id text primary key,
+                path text,
+                name text,
+                note text,
+                params text,
+                status integer,
+                datasource_id text,
+                previlege integer,
+                group_id text,
+                cache_plugin text,
+                cache_plugin_params text,
+                create_time text,
+                update_time text,
+                content_type text,
+                open_trans integer,
+                json_param text
+            )",
+            vec![],
+        )
+        .await
+        .unwrap();
+        db::execute(
+            db,
+            "create table api_sql (
+                id integer primary key autoincrement,
+                api_id text,
+                sql_text text,
+                transform_plugin text,
+                transform_plugin_params text
+            )",
+            vec![],
+        )
+        .await
+        .unwrap();
+        db::execute(
+            db,
+            "create table api_alarm (
+                api_id text,
+                alarm_plugin text,
+                alarm_plugin_param text
+            )",
+            vec![],
+        )
+        .await
+        .unwrap();
     }
 }

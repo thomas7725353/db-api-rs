@@ -183,10 +183,6 @@ export default function ApiEditorPage() {
   }, [sqlTable]);
 
   const viewPreview = useMemo(() => renderViewPreviewText(viewSqlText, viewPreviewParams), [viewPreviewParams, viewSqlText]);
-  const viewCountPreview = useMemo(
-    () => renderViewPreviewText(viewCountSqlText, viewPreviewParams),
-    [viewCountSqlText, viewPreviewParams],
-  );
 
   const editorTabs = useMemo(() => {
     const queryBuilderTab = {
@@ -228,23 +224,30 @@ export default function ApiEditorPage() {
             showIcon
             message="结构片段使用 [[ columns | ident_list ]]、[[ order_by | ident ]]、[[ limit | int(default=10,max=1000) ]]；普通值继续使用 $param 绑定。"
           />
-          <Input.TextArea rows={14} value={viewSqlText} onChange={(event) => setViewSqlText(event.target.value)} />
+          <Form.Item label="列表 SQL 模板">
+            <Input.TextArea rows={14} value={viewSqlText} onChange={(event) => setViewSqlText(event.target.value)} />
+          </Form.Item>
           {responseModeRequiresCountSql(responseMode) ? (
-            <Input.TextArea
-              rows={5}
-              value={viewCountSqlText}
-              placeholder="page/count 模式需要 count SQL 模板，例如 select count(*) as total from demo_items where status = $status"
-              onChange={(event) => setViewCountSqlText(event.target.value)}
-            />
+            <Form.Item label="Count SQL 模板">
+              <Input.TextArea
+                rows={5}
+                value={viewCountSqlText}
+                placeholder="page/count 模式需要 count SQL 模板，例如 select count(*) as total from demo_items where status = $status"
+                onChange={(event) => setViewCountSqlText(event.target.value)}
+              />
+            </Form.Item>
           ) : null}
-          <Input.TextArea
-            rows={6}
-            value={viewPreviewParams}
-            placeholder='预览参数，例如 {"columns":["a.id"],"order_by":"a.id","limit":10,"offset":0}'
-            onChange={(event) => setViewPreviewParams(event.target.value)}
-          />
-          <Input.TextArea rows={8} readOnly value={viewPreview} />
-          {responseModeRequiresCountSql(responseMode) ? <Input.TextArea rows={4} readOnly value={viewCountPreview} /> : null}
+          <Form.Item label="预览参数">
+            <Input.TextArea
+              rows={6}
+              value={viewPreviewParams}
+              placeholder='预览参数，例如 {"columns":["a.id"],"order_by":"a.id","limit":10,"offset":0}'
+              onChange={(event) => setViewPreviewParams(event.target.value)}
+            />
+          </Form.Item>
+          <Form.Item label="列表 SQL 预览">
+            <Input.TextArea rows={8} readOnly value={viewPreview} />
+          </Form.Item>
         </div>
       ),
     };
@@ -263,7 +266,6 @@ export default function ApiEditorPage() {
     sqlTables,
     sqlText,
     updateSqlText,
-    viewCountPreview,
     viewCountSqlText,
     viewPreview,
     viewPreviewParams,

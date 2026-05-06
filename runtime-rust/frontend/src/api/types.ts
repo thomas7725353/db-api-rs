@@ -1,7 +1,7 @@
 import type { RuleGroupType } from 'react-querybuilder';
 
 export type DbType = 'sqlite' | 'mysql' | 'postgres' | string;
-export type ApiEngine = 'sql' | 'queryBuilder';
+export type ApiEngine = 'sql' | 'queryBuilder' | 'viewSql';
 
 export interface DataSource {
   id?: string;

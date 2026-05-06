@@ -5,6 +5,7 @@ use crate::query_dsl::{self, QueryBuilderDsl};
 use crate::repository;
 use crate::response::api_error;
 use crate::sql_engine::{DialectType, SqlTransformer};
+use crate::view_sql;
 use anyhow::{Result, anyhow};
 use axum::{
     Json,
@@ -287,6 +288,53 @@ pub async fn handle_api(
         }
     }
 
+    if is_view_sql_config(&config) {
+        match execute_view_sql(
+            &data_db,
+            &config,
+            sql,
+            &all_params,
+            dialect,
+            first_sql.and_then(|sql| sql.transform_plugin_params.as_deref()),
+        )
+        .await
+        {
+            Ok(data) => {
+                write_access_log(
+                    &state,
+                    AccessLogInput {
+                        url,
+                        status: StatusCode::OK.as_u16() as i32,
+                        duration: started.elapsed().as_millis() as i64,
+                        timestamp,
+                        app_id,
+                        api_id,
+                        error: None,
+                    },
+                )
+                .await;
+                return api_success(data).into_response();
+            }
+            Err(e) => {
+                let message = e.to_string();
+                write_access_log(
+                    &state,
+                    AccessLogInput {
+                        url,
+                        status: StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i32,
+                        duration: started.elapsed().as_millis() as i64,
+                        timestamp,
+                        app_id,
+                        api_id,
+                        error: Some(message.clone()),
+                    },
+                )
+                .await;
+                return sql_error(message).into_response();
+            }
+        }
+    }
+
     let (transformed_sql, param_names) = match SqlTransformer::transform(sql, dialect) {
         Ok(res) => res,
         Err(e) => {
@@ -428,6 +476,25 @@ fn is_query_builder_config(config: &ApiConfig) -> bool {
         .is_some_and(|plugin| plugin.eq_ignore_ascii_case("queryBuilder"))
 }
 
+fn is_view_sql_config(config: &ApiConfig) -> bool {
+    config
+        .sql_list
+        .first()
+        .and_then(|sql| sql.transform_plugin.as_deref())
+        .is_some_and(|plugin| plugin.eq_ignore_ascii_case("viewSql"))
+}
+
+fn view_sql_count_template(config: &ApiConfig) -> Option<&str> {
+    config.sql_list.iter().skip(1).find_map(|sql| {
+        let plugin = sql.transform_plugin.as_deref().unwrap_or("");
+        if plugin.eq_ignore_ascii_case("viewSqlCount") {
+            sql.sql_text.as_deref()
+        } else {
+            None
+        }
+    })
+}
+
 fn is_single_row_response(params: Option<&str>) -> bool {
     let Some(raw) = params.map(str::trim).filter(|raw| !raw.is_empty()) else {
         return false;
@@ -512,6 +579,61 @@ async fn execute_query_builder(
     } else {
         Ok(JsonValue::Array(rows))
     }
+}
+
+async fn execute_view_sql(
+    data_db: &DbConn,
+    config: &ApiConfig,
+    template: &str,
+    input: &JsonValue,
+    dialect: DialectType,
+    plugin_params: Option<&str>,
+) -> Result<JsonValue> {
+    let rendered = view_sql::render_view_sql(template, input)?;
+    let (transformed_sql, param_names) = SqlTransformer::transform(&rendered.sql, dialect)?;
+    let db_values = bind_param_values(&param_names, input, config.params.as_deref())?;
+    let result_type = parse_result_type(plugin_params);
+
+    if result_type == "count" {
+        let count_template = view_sql_count_template(config).unwrap_or(template);
+        return render_and_query_view_sql_count(data_db, config, count_template, input, dialect)
+            .await
+            .map(|total| json!(total));
+    }
+
+    let rows = db::query_json(data_db, &transformed_sql, db_values).await?;
+    if matches!(result_type.as_str(), "object" | "one" | "single") {
+        return Ok(rows.into_iter().next().unwrap_or(JsonValue::Null));
+    }
+
+    if result_type == "page" {
+        let count_template = view_sql_count_template(config)
+            .ok_or_else(|| anyhow!("View SQL page mode requires a count SQL template"))?;
+        let total =
+            render_and_query_view_sql_count(data_db, config, count_template, input, dialect)
+                .await?;
+        return Ok(json!({
+            "list": rows,
+            "total": total,
+            "limit": input.get("limit").cloned().unwrap_or(JsonValue::Null),
+            "offset": input.get("offset").cloned().unwrap_or(JsonValue::Null)
+        }));
+    }
+
+    Ok(JsonValue::Array(rows))
+}
+
+async fn render_and_query_view_sql_count(
+    data_db: &DbConn,
+    config: &ApiConfig,
+    template: &str,
+    input: &JsonValue,
+    dialect: DialectType,
+) -> Result<i64> {
+    let rendered = view_sql::render_view_sql(template, input)?;
+    let (count_sql, count_param_names) = SqlTransformer::transform(&rendered.sql, dialect)?;
+    let count_values = bind_param_values(&count_param_names, input, config.params.as_deref())?;
+    query_builder_total(data_db, &count_sql, count_values).await
 }
 
 async fn query_builder_total(
@@ -839,5 +961,83 @@ mod tests {
         };
 
         assert!(should_return_single_row(&config, None));
+    }
+
+    #[test]
+    fn detects_view_sql_config() {
+        let config = ApiConfig {
+            sql_list: vec![ApiSql {
+                transform_plugin: Some("viewSql".to_string()),
+                sql_text: Some("select [[ columns | ident_list ]] from demo_items".to_string()),
+                transform_plugin_params: Some("resultType=list".to_string()),
+                ..empty_api_sql()
+            }],
+            ..empty_api_config()
+        };
+
+        assert!(is_view_sql_config(&config));
+    }
+
+    #[test]
+    fn finds_view_sql_count_template() {
+        let config = ApiConfig {
+            sql_list: vec![
+                ApiSql {
+                    transform_plugin: Some("viewSql".to_string()),
+                    sql_text: Some(
+                        "select a.* from demo_items a limit [[ limit | int(default=10,max=1000) ]]"
+                            .to_string(),
+                    ),
+                    transform_plugin_params: Some("resultType=page".to_string()),
+                    ..empty_api_sql()
+                },
+                ApiSql {
+                    transform_plugin: Some("viewSqlCount".to_string()),
+                    sql_text: Some("select count(*) as total from demo_items".to_string()),
+                    transform_plugin_params: None,
+                    ..empty_api_sql()
+                },
+            ],
+            ..empty_api_config()
+        };
+
+        assert_eq!(
+            view_sql_count_template(&config).unwrap(),
+            "select count(*) as total from demo_items"
+        );
+    }
+
+    fn empty_api_config() -> ApiConfig {
+        ApiConfig {
+            id: None,
+            name: None,
+            note: None,
+            path: None,
+            datasource_id: None,
+            sql_list: Vec::new(),
+            params: None,
+            status: None,
+            previlege: None,
+            group_id: None,
+            cache_plugin: None,
+            cache_plugin_params: None,
+            create_time: None,
+            update_time: None,
+            content_type: None,
+            open_trans: None,
+            json_param: None,
+            alarm_plugin: None,
+            alarm_plugin_param: None,
+        }
+    }
+
+    fn empty_api_sql() -> ApiSql {
+        ApiSql {
+            id: None,
+            api_id: None,
+            sql_text: None,
+            transform_plugin: None,
+            transform_plugin_params: None,
+        }
     }
 }

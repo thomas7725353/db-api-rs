@@ -5,6 +5,12 @@ import { apiConfigService, datasourceService, groupService, tableService } from 
 import type { ApiConfig, ApiEngine, ApiGroup, DataSource, ParamSpec, QueryBuilderDsl, TableColumn } from '../api/types';
 import ParamEditor, { parseParamSpecs, stringifyParamSpecs } from '../components/ParamEditor';
 import QueryBuilderEditor from '../components/QueryBuilderEditor';
+import {
+  buildViewSqlList,
+  responseModeRequiresCountSql,
+  resultTypeParams,
+  type ApiResponseMode,
+} from '../components/apiEditorPayload';
 import { inferQueryBuilderPageParams, sanitizeQueryBuilderDsl } from '../components/queryBuilderPreview';
 import {
   columnParamOptions,
@@ -12,6 +18,7 @@ import {
   inferSqlTableName,
   syncParamTypesFromColumns,
 } from '../components/sqlParamSchema';
+import { renderViewSqlPreview } from '../components/viewSqlPreview';
 
 const defaultDsl: QueryBuilderDsl = {
   type: 'queryBuilder',
@@ -27,7 +34,24 @@ const defaultDsl: QueryBuilderDsl = {
   count: true,
 };
 
-type QueryBuilderResponseMode = 'list' | 'page' | 'object' | 'count';
+const defaultViewSqlText =
+  'select [[ columns | ident_list ]] from demo_items a where a.status = $status order by [[ order_by | ident ]] desc limit [[ limit | int(default=10,max=1000) ]] offset [[ offset | int(default=0) ]]';
+
+const defaultViewCountSqlText = 'select count(*) as total from demo_items a where a.status = $status';
+
+const defaultViewPreviewParams = JSON.stringify(
+  {
+    columns: ['a.id', 'a.name', 'a.status'],
+    order_by: 'a.id',
+    limit: 10,
+    offset: 0,
+    status: 'active',
+  },
+  null,
+  2,
+);
+
+type QueryBuilderResponseMode = ApiResponseMode;
 
 export default function ApiEditorPage() {
   const { id } = useParams();
@@ -38,6 +62,9 @@ export default function ApiEditorPage() {
   const [groups, setGroups] = useState<ApiGroup[]>([]);
   const [engine, setEngine] = useState<ApiEngine>('queryBuilder');
   const [sqlText, setSqlText] = useState('select * from demo_items limit $limit offset $offset');
+  const [viewSqlText, setViewSqlText] = useState(defaultViewSqlText);
+  const [viewCountSqlText, setViewCountSqlText] = useState(defaultViewCountSqlText);
+  const [viewPreviewParams, setViewPreviewParams] = useState(defaultViewPreviewParams);
   const [dsl, setDsl] = useState<QueryBuilderDsl>(defaultDsl);
   const [responseMode, setResponseMode] = useState<QueryBuilderResponseMode>('page');
   const [params, setParams] = useState<ParamSpec[]>([
@@ -77,6 +104,11 @@ export default function ApiEditorPage() {
         } catch {
           setDsl(defaultDsl);
         }
+      } else if (firstSql?.transformPlugin === 'viewSql') {
+        setEngine('viewSql');
+        setViewSqlText(firstSql.sqlText || '');
+        setViewCountSqlText(detail.sqlList?.find((item) => item.transformPlugin === 'viewSqlCount')?.sqlText || '');
+        setResponseMode(parseResponseMode(firstSql.transformPluginParams));
       } else {
         setEngine('sql');
         setSqlText(firstSql?.sqlText || '');
@@ -150,6 +182,12 @@ export default function ApiEditorPage() {
     if (inferredTable && inferredTable !== sqlTable) setSqlTable(inferredTable);
   }, [sqlTable]);
 
+  const viewPreview = useMemo(() => renderViewPreviewText(viewSqlText, viewPreviewParams), [viewPreviewParams, viewSqlText]);
+  const viewCountPreview = useMemo(
+    () => renderViewPreviewText(viewCountSqlText, viewPreviewParams),
+    [viewCountSqlText, viewPreviewParams],
+  );
+
   const editorTabs = useMemo(() => {
     const queryBuilderTab = {
       key: 'queryBuilder',
@@ -180,13 +218,65 @@ export default function ApiEditorPage() {
         </div>
       ),
     };
-    if (!isEdit) return [queryBuilderTab, sqlTab];
-    return engine === 'queryBuilder' ? [queryBuilderTab] : [sqlTab];
-  }, [dsl, engine, isEdit, selectedDatasourceId, sqlSchemaError, sqlTable, sqlTables, sqlText, updateSqlText]);
+    const viewSqlTab = {
+      key: 'viewSql',
+      label: 'View SQL',
+      children: (
+        <div className="space-y-3">
+          <Alert
+            type="info"
+            showIcon
+            message="结构片段使用 [[ columns | ident_list ]]、[[ order_by | ident ]]、[[ limit | int(default=10,max=1000) ]]；普通值继续使用 $param 绑定。"
+          />
+          <Input.TextArea rows={14} value={viewSqlText} onChange={(event) => setViewSqlText(event.target.value)} />
+          {responseModeRequiresCountSql(responseMode) ? (
+            <Input.TextArea
+              rows={5}
+              value={viewCountSqlText}
+              placeholder="page/count 模式需要 count SQL 模板，例如 select count(*) as total from demo_items where status = $status"
+              onChange={(event) => setViewCountSqlText(event.target.value)}
+            />
+          ) : null}
+          <Input.TextArea
+            rows={6}
+            value={viewPreviewParams}
+            placeholder='预览参数，例如 {"columns":["a.id"],"order_by":"a.id","limit":10,"offset":0}'
+            onChange={(event) => setViewPreviewParams(event.target.value)}
+          />
+          <Input.TextArea rows={8} readOnly value={viewPreview} />
+          {responseModeRequiresCountSql(responseMode) ? <Input.TextArea rows={4} readOnly value={viewCountPreview} /> : null}
+        </div>
+      ),
+    };
+    if (!isEdit) return [queryBuilderTab, sqlTab, viewSqlTab];
+    if (engine === 'queryBuilder') return [queryBuilderTab];
+    if (engine === 'viewSql') return [viewSqlTab];
+    return [sqlTab];
+  }, [
+    dsl,
+    engine,
+    isEdit,
+    responseMode,
+    selectedDatasourceId,
+    sqlSchemaError,
+    sqlTable,
+    sqlTables,
+    sqlText,
+    updateSqlText,
+    viewCountPreview,
+    viewCountSqlText,
+    viewPreview,
+    viewPreviewParams,
+    viewSqlText,
+  ]);
 
   async function save() {
     const values = await form.validateFields();
     const queryBuilderDsl = sanitizeQueryBuilderDsl(dsl);
+    if (engine === 'viewSql' && responseModeRequiresCountSql(responseMode) && !viewCountSqlText.trim()) {
+      message.error('page/count 模式需要 count SQL 模板');
+      return;
+    }
     const sqlList =
       engine === 'queryBuilder'
         ? [
@@ -196,6 +286,8 @@ export default function ApiEditorPage() {
               transformPluginParams: resultTypeParams(responseMode),
             },
           ]
+        : engine === 'viewSql'
+          ? buildViewSqlList(viewSqlText, viewCountSqlText, responseMode)
         : [{ sqlText, transformPlugin: 'sql', transformPluginParams: '' }];
     const payload: ApiConfig = {
       ...values,
@@ -203,6 +295,8 @@ export default function ApiEditorPage() {
       params:
         engine === 'queryBuilder'
           ? stringifyParamSpecs(inferQueryBuilderPageParams(queryBuilderDsl))
+          : engine === 'viewSql'
+            ? stringifyParamSpecs(params)
           : contentType === 'application/json'
             ? '[]'
             : stringifyParamSpecs(params),
@@ -225,7 +319,7 @@ export default function ApiEditorPage() {
           <Typography.Title level={3} className="!mb-1">
             {isEdit ? '编辑 API' : '创建 API'}
           </Typography.Title>
-          <Typography.Text type="secondary">QueryBuilder 模式适合普通查询 API，SQL 模式保留兼容。</Typography.Text>
+          <Typography.Text type="secondary">QueryBuilder 模式适合普通查询 API，View SQL 适合复杂查询，SQL 模式保留兼容。</Typography.Text>
         </div>
         <Space>
           <Button onClick={() => navigate('/apis')}>返回</Button>
@@ -277,7 +371,7 @@ export default function ApiEditorPage() {
       </Card>
 
       <Card>
-        {engine === 'queryBuilder' ? (
+        {engine === 'queryBuilder' || engine === 'viewSql' ? (
           <Form.Item label="返回模式">
             <Select
               className="max-w-sm"
@@ -290,7 +384,9 @@ export default function ApiEditorPage() {
               ]}
               onChange={(mode: QueryBuilderResponseMode) => {
                 setResponseMode(mode);
-                setDsl((current) => ({ ...current, count: mode === 'page' || mode === 'count' }));
+                if (engine === 'queryBuilder') {
+                  setDsl((current) => ({ ...current, count: mode === 'page' || mode === 'count' }));
+                }
               }}
             />
           </Form.Item>
@@ -307,6 +403,8 @@ export default function ApiEditorPage() {
       <Card title="请求参数定义">
         {engine === 'queryBuilder' ? (
           <ParamEditor value={inferQueryBuilderPageParams(sanitizeQueryBuilderDsl(dsl))} readonly emptyText="当前 QueryBuilder 没有分页参数" />
+        ) : engine === 'viewSql' ? (
+          <ParamEditor value={params} onChange={setParams} />
         ) : contentType === 'application/json' ? (
           <Input.TextArea
             rows={8}
@@ -329,15 +427,17 @@ export default function ApiEditorPage() {
     </div>
   );
 }
-
-
-
-function resultTypeParams(mode: QueryBuilderResponseMode): string {
-  return `resultType=${mode}`;
-}
-
 function parseResponseMode(raw?: string): QueryBuilderResponseMode {
   const value = raw?.match(/result_?type=([^&]+)/i)?.[1]?.toLowerCase();
   if (value === 'object' || value === 'count' || value === 'list' || value === 'page') return value;
   return 'page';
+}
+
+function renderViewPreviewText(template: string, rawParams: string): string {
+  try {
+    const params = JSON.parse(rawParams) as Record<string, unknown>;
+    return renderViewSqlPreview(template, params).sql;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }

@@ -1,9 +1,10 @@
-import { DeleteOutlined, PlusOutlined, SendOutlined } from '@ant-design/icons';
-import { App, Button, Card, Empty, Form, Input, Space, Tag, Typography } from 'antd';
+import { CopyOutlined, DeleteOutlined, PlusOutlined, SendOutlined } from '@ant-design/icons';
+import { App, Button, Card, Empty, Form, Input, Space, Tabs, Tag, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { apiConfigService, callUserApi, systemService } from '../api/services';
 import type { ApiConfig, ParamSpec } from '../api/types';
+import { generateCurlCommand } from '../components/curlExample';
 import { normalizeParamType, parseParamSpecs } from '../components/ParamEditor';
 
 type RequestParam = ParamSpec & {
@@ -23,6 +24,14 @@ export default function ApiRequestPage() {
 
   const contentType = detail?.contentType || 'application/json';
   const isJson = contentType.startsWith('application/json');
+  const requestUrl = `http://${address}/api/${detail?.path || ''}`.replace('/api//', '/api/');
+  const curlCommand = generateCurlCommand({
+    url: requestUrl,
+    contentType,
+    token,
+    body: isJson ? jsonBody || '{}' : undefined,
+    params: isJson ? undefined : params,
+  });
 
   useEffect(() => {
     if (!id) return;
@@ -34,6 +43,15 @@ export default function ApiRequestPage() {
     });
     void systemService.ip().then(setAddress);
   }, [id]);
+
+  async function copyCurl() {
+    try {
+      await navigator.clipboard.writeText(curlCommand);
+      message.success('cURL 已复制');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '复制 cURL 失败');
+    }
+  }
 
   async function send() {
     if (!detail?.path) return;
@@ -83,68 +101,96 @@ export default function ApiRequestPage() {
   return (
     <div className="mx-auto max-w-5xl space-y-4">
       <Typography.Title level={3}>{detail?.name || '请求测试'}</Typography.Title>
-      <Card>
-        <Form layout="vertical">
-          <Form.Item label="URL">
-            <Input value={`http://${address}/api/${detail?.path || ''}`.replace('/api//', '/api/')} readOnly />
-          </Form.Item>
-          <Form.Item label="Content-Type">
-            <Input value={contentType} readOnly />
-          </Form.Item>
-          <Form.Item label="Authorization">
-            <Input value={token} onChange={(event) => setToken(event.target.value)} />
-          </Form.Item>
+      <Tabs
+        items={[
+          {
+            key: 'request',
+            label: '接口请求测试',
+            children: (
+              <>
+                <Card>
+                  <Form layout="vertical">
+                    <Form.Item label="URL">
+                      <Input value={requestUrl} readOnly />
+                    </Form.Item>
+                    <Form.Item label="Content-Type">
+                      <Input value={contentType} readOnly />
+                    </Form.Item>
+                    <Form.Item label="Authorization">
+                      <Input value={token} onChange={(event) => setToken(event.target.value)} />
+                    </Form.Item>
 
-          <Form.Item label={isJson ? '请求参数 JSON' : '请求参数'}>
-            {isJson ? (
-              <Input.TextArea rows={10} value={jsonBody} onChange={(event) => setJsonBody(event.target.value)} />
-            ) : params.length ? (
-              <div className="request-param-list">
-                {params.map((row, rowIndex) => (
-                  <div className="request-param-row" key={`${row.name}-${rowIndex}`}>
-                    <div className="request-param-meta">
-                      <span className="request-param-name">{row.name}</span>
-                      <Tag className="request-param-type">{normalizeParamType(row.type)}</Tag>
-                      {row.note ? <Typography.Text type="secondary">{row.note}</Typography.Text> : null}
-                    </div>
-                    {isArrayType(row.type) ? (
-                      <Space direction="vertical" className="request-param-array" size={8}>
-                        {ensureArrayValues(row).map((item, valueIndex) => (
-                          <Space.Compact className="request-param-array-item" key={`${row.name}-${valueIndex}`}>
-                            <Input
-                              value={String(item.va ?? '')}
-                              placeholder="数组元素"
-                              onChange={(event) => updateArrayValue(rowIndex, valueIndex, event.target.value)}
-                            />
-                            <Button icon={<DeleteOutlined />} onClick={() => removeArrayValue(rowIndex, valueIndex)} />
-                          </Space.Compact>
-                        ))}
-                        <Button icon={<PlusOutlined />} onClick={() => addArrayValue(rowIndex)}>
-                          添加值
-                        </Button>
-                      </Space>
-                    ) : (
-                      <Input
-                        value={String(row.value ?? '')}
-                        placeholder={placeholderFor(row.type)}
-                        onChange={(event) => updateParam(rowIndex, { value: event.target.value })}
-                      />
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前 API 没有请求参数" />
-            )}
-          </Form.Item>
-          <Button type="primary" icon={<SendOutlined />} onClick={send}>
-            发送请求
-          </Button>
-        </Form>
-      </Card>
-      <Card title="返回结果">
-        <Input.TextArea rows={14} value={result} readOnly />
-      </Card>
+                    <Form.Item label={isJson ? '请求参数 JSON' : '请求参数'}>
+                      {isJson ? (
+                        <Input.TextArea rows={10} value={jsonBody} onChange={(event) => setJsonBody(event.target.value)} />
+                      ) : params.length ? (
+                        <div className="request-param-list">
+                          {params.map((row, rowIndex) => (
+                            <div className="request-param-row" key={`${row.name}-${rowIndex}`}>
+                              <div className="request-param-meta">
+                                <span className="request-param-name">{row.name}</span>
+                                <Tag className="request-param-type">{normalizeParamType(row.type)}</Tag>
+                                {row.note ? <Typography.Text type="secondary">{row.note}</Typography.Text> : null}
+                              </div>
+                              {isArrayType(row.type) ? (
+                                <Space direction="vertical" className="request-param-array" size={8}>
+                                  {ensureArrayValues(row).map((item, valueIndex) => (
+                                    <Space.Compact className="request-param-array-item" key={`${row.name}-${valueIndex}`}>
+                                      <Input
+                                        value={String(item.va ?? '')}
+                                        placeholder="数组元素"
+                                        onChange={(event) => updateArrayValue(rowIndex, valueIndex, event.target.value)}
+                                      />
+                                      <Button icon={<DeleteOutlined />} onClick={() => removeArrayValue(rowIndex, valueIndex)} />
+                                    </Space.Compact>
+                                  ))}
+                                  <Button icon={<PlusOutlined />} onClick={() => addArrayValue(rowIndex)}>
+                                    添加值
+                                  </Button>
+                                </Space>
+                              ) : (
+                                <Input
+                                  value={String(row.value ?? '')}
+                                  placeholder={placeholderFor(row.type)}
+                                  onChange={(event) => updateParam(rowIndex, { value: event.target.value })}
+                                />
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前 API 没有请求参数" />
+                      )}
+                    </Form.Item>
+                    <Button type="primary" icon={<SendOutlined />} onClick={send}>
+                      发送请求
+                    </Button>
+                  </Form>
+                </Card>
+                <Card title="返回结果" className="mt-4">
+                  <Input.TextArea rows={14} value={result} readOnly />
+                </Card>
+              </>
+            ),
+          },
+          {
+            key: 'curl',
+            label: '调用示例',
+            children: (
+              <Card
+                title="cURL"
+                extra={
+                  <Button icon={<CopyOutlined />} onClick={copyCurl}>
+                    复制 cURL
+                  </Button>
+                }
+              >
+                <Input.TextArea rows={12} value={curlCommand} readOnly />
+              </Card>
+            ),
+          },
+        ]}
+      />
     </div>
   );
 }

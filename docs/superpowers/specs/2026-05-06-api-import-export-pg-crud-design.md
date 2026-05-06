@@ -16,6 +16,7 @@ Restore the old DBAPI API grouping, import, and export workflow in the Rust admi
 - Support API config export and import using the old Java/Vue file shapes:
   - API export: `{ "api": [...], "sql": [...] }`
   - group export: `[{ "id": "...", "name": "..." }]`
+- Make import/export datasource-agnostic. API groups for PostgreSQL, MySQL, or SQLite are all exported and imported through the same metadata workflow.
 - Create a `pg crud` group and copy the confirmed demo API template set into that group with a `/pg` path prefix.
 
 ## Non-Goals
@@ -24,6 +25,16 @@ Restore the old DBAPI API grouping, import, and export workflow in the Rust admi
 - Do not replace or remove the existing SQLite demo APIs.
 - Do not use PostgreSQL to store DBAPI configuration tables.
 - Do not add a second import/export format in this phase.
+- Do not build a MySQL demo datasource or MySQL query smoke test in this phase.
+
+## MySQL Boundary
+
+DBAPI must continue to support MySQL as a business datasource target. That support has two layers:
+
+- Metadata layer: current import/export must already handle MySQL API groups, because API groups and API configs are datasource-agnostic metadata stored in SQLite.
+- Runtime query layer: MySQL query execution remains part of the product direction through SeaORM, SQLx, and SeaQuery support, but this phase does not create a MySQL compose service, MySQL demo table, or MySQL copied CRUD API set.
+
+This means a `mysql crud` group can use the same export/import paths added here when the referenced MySQL datasource metadata already exists. The current demo copy work is PostgreSQL-only because the requested local business datasource is PostgreSQL.
 
 ## Confirmed API Group Template
 
@@ -42,9 +53,9 @@ The PostgreSQL copy keeps these APIs as separate API configs, assigns them to th
 
 ## Backend Design
 
-Add repository functions for batch API and group import/export:
+Add repository functions for datasource-agnostic batch API and group import/export:
 
-- Load selected `api_config` rows by IDs, including child `api_sql` and `api_alarm` rows when present.
+- Load selected `api_config` rows by IDs, including datasource IDs, group IDs, and child `api_sql` and `api_alarm` rows when present.
 - Load selected `api_group` rows by IDs.
 - Insert imported groups.
 - Insert imported API configs and their child SQL rows.
@@ -70,6 +81,7 @@ Update `ApisPage.tsx` so the list page mirrors the old workflow without changing
 - Add API export and import actions.
 - Add group export and import actions.
 - Add an export selection modal based on the existing `/apiConfig/getApiTree` data.
+- Keep the UI labels generic. The same import/export controls must work for `pg crud`, `mysql crud`, and existing SQLite groups.
 
 The API editor already has a group selector and can keep using the existing `/group/getAll` route.
 
@@ -108,7 +120,8 @@ Copy the confirmed API template set into `pg crud`:
 3. User imports a file.
 4. Backend validates IDs, paths, group references, and JSON shape.
 5. Backend inserts rows into SQLite metadata and invalidates the API config cache.
-6. For PostgreSQL demo setup, the app stores only datasource and API metadata in SQLite; runtime requests execute SQL against the PostgreSQL business datasource.
+6. Imported configs keep their datasource references. They may point to SQLite, PostgreSQL, or MySQL datasources that exist in metadata.
+7. For PostgreSQL demo setup, the app stores only datasource and API metadata in SQLite; runtime requests execute SQL against the PostgreSQL business datasource.
 
 ## Error Handling
 
@@ -116,6 +129,7 @@ Copy the confirmed API template set into `pg crud`:
 - Duplicate API IDs or paths return a failure message instead of partial import.
 - Invalid JSON or missing `api`/`sql` arrays returns a clear failure message.
 - Missing datasource or group references in imported APIs return a clear failure message.
+- MySQL API group imports are accepted when the referenced MySQL datasource metadata already exists.
 - PostgreSQL connection failures surface through existing datasource connection and request execution errors.
 
 ## Testing

@@ -90,11 +90,9 @@ Expected: `success=true`, `data.rowsAffected=1`.
 ### Get
 
 ```bash
-rtk curl -sS -X POST \
+rtk curl -sS \
   -H "Authorization: $TOKEN" \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data-urlencode 'id=1' \
-  'http://127.0.0.1:8520/api/demo/items/get'
+  'http://127.0.0.1:8520/api/demo/items/get?id=1'
 ```
 
 Expected: `success=true`, `data` is one object when found, or `null` when not found.
@@ -102,7 +100,7 @@ Expected: `success=true`, `data` is one object when found, or `null` when not fo
 ### Update
 
 ```bash
-rtk curl -sS -X POST \
+rtk curl -sS -X PATCH \
   -H "Authorization: $TOKEN" \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   --data-urlencode 'id=1' \
@@ -117,11 +115,9 @@ Expected: `success=true`, `data.rowsAffected` is `0` or `1` depending on whether
 ### Delete
 
 ```bash
-rtk curl -sS -X POST \
+rtk curl -sS -X DELETE \
   -H "Authorization: $TOKEN" \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data-urlencode 'id=2' \
-  'http://127.0.0.1:8520/api/demo/items/delete'
+  'http://127.0.0.1:8520/api/demo/items/delete?id=2'
 ```
 
 Expected: `success=true`, `data.rowsAffected` is `0` or `1`.
@@ -129,27 +125,17 @@ Expected: `success=true`, `data.rowsAffected` is `0` or `1`.
 ### List With Filter, Limit, Offset, And Total
 
 ```bash
-rtk curl -sS -X POST \
+rtk curl -sS \
   -H "Authorization: $TOKEN" \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data-urlencode 'keyword=' \
-  --data-urlencode 'status=' \
-  --data-urlencode 'limit=10' \
-  --data-urlencode 'offset=0' \
-  'http://127.0.0.1:8520/api/demo/items/list'
+  'http://127.0.0.1:8520/api/demo/items/list?keyword=&status=&limit=10&offset=0'
 ```
 
 Filtered example:
 
 ```bash
-rtk curl -sS -X POST \
+rtk curl -sS \
   -H "Authorization: $TOKEN" \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data-urlencode 'keyword=Alpha' \
-  --data-urlencode 'status=active' \
-  --data-urlencode 'limit=10' \
-  --data-urlencode 'offset=0' \
-  'http://127.0.0.1:8520/api/demo/items/list'
+  'http://127.0.0.1:8520/api/demo/items/list?keyword=Alpha&status=active&limit=10&offset=0'
 ```
 
 Expected: `success=true`; each returned row includes `total`. Empty result sets return `data=[]`, so consumers that need total for empty pages must query offset `0` or handle empty totals.
@@ -168,13 +154,9 @@ Use the repository root for Rust commands.
 Then verify with curl:
 
 ```bash
-rtk curl -sS -X POST \
+rtk curl -sS \
   -H "Authorization: $TOKEN" \
-  --data-urlencode 'keyword=' \
-  --data-urlencode 'status=' \
-  --data-urlencode 'limit=10' \
-  --data-urlencode 'offset=0' \
-  'http://127.0.0.1:8520/api/demo/items/list'
+  'http://127.0.0.1:8520/api/demo/items/list?keyword=&status=&limit=10&offset=0'
 ```
 
 The response must be JSON with `success:true`.
@@ -182,13 +164,8 @@ The response must be JSON with `success:true`.
 Verify token rejection:
 
 ```bash
-rtk curl -sS -w '\nHTTP_STATUS=%{http_code}\n' -X POST \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data-urlencode 'keyword=' \
-  --data-urlencode 'status=' \
-  --data-urlencode 'limit=10' \
-  --data-urlencode 'offset=0' \
-  'http://127.0.0.1:8520/api/demo/items/list'
+rtk curl -sS -w '\nHTTP_STATUS=%{http_code}\n' \
+  'http://127.0.0.1:8520/api/demo/items/list?keyword=&status=&limit=10&offset=0'
 ```
 
 Expected: HTTP `401` and JSON `success=false`, `msg=No Token!`.

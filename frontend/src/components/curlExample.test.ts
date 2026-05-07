@@ -2,6 +2,37 @@ import { describe, expect, it } from 'vitest';
 import { generateCurlCommand } from './curlExample';
 
 describe('generateCurlCommand', () => {
+  it('generates GET curl with query string parameters', () => {
+    const curl = generateCurlCommand({
+      method: 'GET',
+      url: 'http://127.0.0.1:8520/api/demo/items/list',
+      contentType: 'application/json',
+      token: 'sk-demo',
+      params: [
+        { name: 'limit', value: 10 },
+        { name: 'offset', value: 0 },
+      ],
+    });
+
+    expect(curl).toBe(
+      [
+        "curl 'http://127.0.0.1:8520/api/demo/items/list?limit=10&offset=0' \\",
+        "  -H 'Authorization: sk-demo'",
+      ].join('\n'),
+    );
+  });
+
+  it('generates DELETE curl with query string parameters and no body', () => {
+    const curl = generateCurlCommand({
+      method: 'DELETE',
+      url: 'http://127.0.0.1:8520/api/demo/items/delete',
+      contentType: 'application/json',
+      params: [{ name: 'id', value: 1 }],
+    });
+
+    expect(curl).toBe("curl -X DELETE 'http://127.0.0.1:8520/api/demo/items/delete?id=1'");
+  });
+
   it('generates JSON cURL with content type and Authorization', () => {
     const curl = generateCurlCommand({
       url: 'http://127.0.0.1:8520/api/student/all',

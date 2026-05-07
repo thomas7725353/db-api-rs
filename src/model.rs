@@ -28,6 +28,8 @@ pub struct ApiConfig {
     pub name: Option<String>,
     pub note: Option<String>,
     pub path: Option<String>,
+    #[serde(rename = "method", alias = "http_method")]
+    pub method: Option<String>,
     #[serde(rename = "datasourceId", alias = "datasource_id")]
     pub datasource_id: Option<String>,
     #[serde(rename = "sqlList", default)]

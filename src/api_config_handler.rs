@@ -358,12 +358,14 @@ fn api_config_from_input(input: JsonValue, require_id: bool) -> Result<ApiConfig
     if path.as_deref().unwrap_or("").trim().is_empty() {
         return Err("路径不能为空".to_string());
     }
+    let method = normalize_method(&input)?;
 
     Ok(ApiConfig {
         id,
         name: get_string(&input, "name"),
         note: get_string(&input, "note"),
         path,
+        method: Some(method),
         datasource_id: get_string(&input, "datasourceId")
             .or_else(|| get_string(&input, "datasource_id")),
         sql_list: parse_sql_list(input.get("sqlList")),
@@ -393,6 +395,18 @@ fn normalize_content_params(config: &mut ApiConfig) {
         Some("application/json") => config.params = Some("[]".to_string()),
         Some("application/x-www-form-urlencoded") => config.json_param = None,
         _ => {}
+    }
+}
+
+fn normalize_method(input: &JsonValue) -> Result<String, String> {
+    let method = get_string(input, "method")
+        .or_else(|| get_string(input, "http_method"))
+        .unwrap_or_else(|| "POST".to_string())
+        .trim()
+        .to_ascii_uppercase();
+    match method.as_str() {
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" => Ok(method),
+        _ => Err("Invalid HTTP method".to_string()),
     }
 }
 
@@ -517,4 +531,60 @@ fn extract_dollar_params(sql: &str) -> Vec<String> {
         }
     }
     names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn api_config_from_input_defaults_method_to_post() {
+        let config = api_config_from_input(
+            json!({
+                "name": "Demo",
+                "path": "demo/items/create",
+                "datasourceId": "ds-1",
+                "sqlList": []
+            }),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(config.method.as_deref(), Some("POST"));
+    }
+
+    #[test]
+    fn api_config_from_input_uppercases_valid_method() {
+        let config = api_config_from_input(
+            json!({
+                "name": "Demo",
+                "path": "demo/items/list",
+                "method": "get",
+                "datasourceId": "ds-1",
+                "sqlList": []
+            }),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(config.method.as_deref(), Some("GET"));
+    }
+
+    #[test]
+    fn api_config_from_input_rejects_invalid_method() {
+        let error = api_config_from_input(
+            json!({
+                "name": "Demo",
+                "path": "demo/items/list",
+                "method": "TRACE",
+                "datasourceId": "ds-1",
+                "sqlList": []
+            }),
+            false,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "Invalid HTTP method");
+    }
 }

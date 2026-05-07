@@ -2,6 +2,7 @@ import type { RuleGroupType } from 'react-querybuilder';
 
 export type DbType = 'sqlite' | 'mysql' | 'postgres' | string;
 export type ApiEngine = 'sql' | 'queryBuilder' | 'viewSql';
+export type ApiMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 export interface DataSource {
   id?: string;
@@ -31,6 +32,7 @@ export interface ApiConfig {
   name?: string;
   note?: string;
   path?: string;
+  method?: ApiMethod;
   datasourceId?: string;
   sqlList?: ApiSql[];
   params?: string;

@@ -1,5 +1,5 @@
 import { apiDownload, apiGet, apiPost, apiRequest, apiUpload } from './client';
-import type { AccessLog, ApiConfig, ApiGroup, ApiTreeNode, AppInfo, DataSource, TableColumn } from './types';
+import type { AccessLog, ApiConfig, ApiGroup, ApiMethod, ApiTreeNode, AppInfo, DataSource, TableColumn } from './types';
 
 export const systemService = {
   version: () => apiPost<string>('/system/version'),
@@ -97,20 +97,38 @@ export const monitorService = {
 
 export async function callUserApi(
   path: string,
-  body: unknown,
+  body: Record<string, unknown>,
   contentType: string,
   token?: string,
+  method: ApiMethod = 'POST',
 ): Promise<unknown> {
-  const headers: Record<string, string> = { 'Content-Type': contentType };
+  const normalizedMethod = method || 'POST';
+  const cleanPath = `/api/${path.replace(/^\/+/, '')}`;
+  const headers: Record<string, string> = {};
   if (token) headers.Authorization = token;
+
+  if (normalizedMethod === 'GET' || normalizedMethod === 'DELETE') {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(body)) {
+      if (Array.isArray(value)) {
+        for (const item of value) query.append(key, String(item));
+      } else if (value !== undefined && value !== null && value !== '') {
+        query.set(key, String(value));
+      }
+    }
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return apiRequest(`${cleanPath}${suffix}`, { method: normalizedMethod, headers });
+  }
+
+  headers['Content-Type'] = contentType;
   const requestBody =
     contentType === 'application/x-www-form-urlencoded'
       ? new URLSearchParams(body as Record<string, string>).toString()
       : typeof body === 'string'
         ? body
         : JSON.stringify(body);
-  return apiRequest(`/api/${path.replace(/^\/+/, '')}`, {
-    method: 'POST',
+  return apiRequest(cleanPath, {
+    method: normalizedMethod,
     headers,
     body: requestBody,
   });

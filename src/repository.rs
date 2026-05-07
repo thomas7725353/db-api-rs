@@ -3,7 +3,9 @@ use crate::model::{
     AccessLog, ApiAlarm, ApiConfig, ApiConfigExport, ApiGroup, ApiSql, AppInfo, DataSource, User,
 };
 use chrono::Local;
-use sea_orm::{ConnectionTrait, DatabaseTransaction, FromQueryResult, QueryResult, TransactionTrait};
+use sea_orm::{
+    ConnectionTrait, DatabaseTransaction, FromQueryResult, QueryResult, TransactionTrait,
+};
 use sea_query::Value;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -12,6 +14,7 @@ use uuid::Uuid;
 pub async fn init_repository(url: &str) -> anyhow::Result<DbConn> {
     let db = db::connect_metadata(url).await?;
     ensure_standalone_tables(&db).await?;
+    ensure_api_config_method_column(&db).await?;
     Ok(db)
 }
 
@@ -34,6 +37,16 @@ async fn ensure_standalone_tables(db: &DbConn) -> anyhow::Result<()> {
         vec![],
     )
     .await?;
+    Ok(())
+}
+
+async fn ensure_api_config_method_column(db: &DbConn) -> anyhow::Result<()> {
+    let _ = db::execute(
+        db,
+        "alter table api_config add column method text default 'POST'",
+        vec![],
+    )
+    .await;
     Ok(())
 }
 
@@ -78,7 +91,7 @@ async fn count_first(db: &DbConn, sql: &str, args: Vec<Value>) -> i64 {
 
 const DATASOURCE_COLUMNS: &str =
     "id, name, note, type, url, username, password, driver, table_sql, create_time, update_time";
-const API_COLUMNS: &str = "id, path, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param";
+const API_COLUMNS: &str = "id, path, method, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param";
 const APP_COLUMNS: &str = "id, name, note, secret, expire_desc, expire_duration, token, expire_at";
 
 pub async fn select_all_datasources(db: &DbConn) -> anyhow::Result<Vec<DataSource>> {
@@ -220,10 +233,11 @@ pub async fn import_api_configs(db: &DbConn, bundle: &ApiConfigExport) -> anyhow
         execute_tx(
             db,
             &txn,
-            "insert into api_config (id, path, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "insert into api_config (id, path, method, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             vec![
                 v(&config.id),
                 v(&config.path),
+                v(&config.method),
                 v(&config.name),
                 v(&config.note),
                 v(&config.params),
@@ -543,10 +557,11 @@ pub async fn count_api_path(db: &DbConn, path: &str, exclude_id: Option<&str>) -
 pub async fn insert_api_config(db: &DbConn, config: &ApiConfig) -> anyhow::Result<()> {
     db::execute(
         db,
-        "insert into api_config (id, path, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "insert into api_config (id, path, method, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         vec![
             v(&config.id),
             v(&config.path),
+            v(&config.method),
             v(&config.name),
             v(&config.note),
             v(&config.params),
@@ -571,9 +586,10 @@ pub async fn insert_api_config(db: &DbConn, config: &ApiConfig) -> anyhow::Resul
 pub async fn update_api_config(db: &DbConn, config: &ApiConfig) -> anyhow::Result<()> {
     db::execute(
         db,
-        "update api_config set path = ?, name = ?, note = ?, params = ?, status = ?, datasource_id = ?, previlege = ?, group_id = ?, cache_plugin = ?, cache_plugin_params = ?, update_time = ?, content_type = ?, open_trans = ?, json_param = ? where id = ?",
+        "update api_config set path = ?, method = ?, name = ?, note = ?, params = ?, status = ?, datasource_id = ?, previlege = ?, group_id = ?, cache_plugin = ?, cache_plugin_params = ?, update_time = ?, content_type = ?, open_trans = ?, json_param = ? where id = ?",
         vec![
             v(&config.path),
+            v(&config.method),
             v(&config.name),
             v(&config.note),
             v(&config.params),
@@ -1000,10 +1016,11 @@ mod tests {
         create_api_config_test_tables(&db).await;
         db::execute(
             &db,
-            "insert into api_config (id, path, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "insert into api_config (id, path, method, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             vec![
                 v("api-1"),
                 v("/demo/view"),
+                v("POST"),
                 v("View SQL Demo"),
                 v(""),
                 v("[]"),
@@ -1043,6 +1060,41 @@ mod tests {
             configs[0].sql_list[0].transform_plugin.as_deref(),
             Some("viewSql")
         );
+    }
+
+    #[tokio::test]
+    async fn api_config_method_round_trips() {
+        let db = init_repository("sqlite::memory:").await.unwrap();
+        create_api_config_test_tables(&db).await;
+        db::execute(
+            &db,
+            "insert into api_config (id, path, method, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            vec![
+                v("api-get"),
+                v("demo/items/list"),
+                v("GET"),
+                v("Demo List"),
+                v(""),
+                v("[]"),
+                v(1),
+                v("ds-1"),
+                v(1),
+                v("group-1"),
+                v(None::<String>),
+                v(None::<String>),
+                v("2026-05-07 10:00:00"),
+                v("2026-05-07 10:00:00"),
+                v("application/json"),
+                v(0),
+                v(None::<String>),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let config = select_api_by_id(&db, "api-get").await.unwrap().unwrap();
+
+        assert_eq!(config.method.as_deref(), Some("GET"));
     }
 
     #[tokio::test]
@@ -1089,10 +1141,11 @@ mod tests {
         .unwrap();
         db::execute(
             &db,
-            "insert into api_config (id, path, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "insert into api_config (id, path, method, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             vec![
                 v("api-1"),
                 v("/demo/items/get"),
+                v("POST"),
                 v("get"),
                 v(""),
                 v("[]"),
@@ -1157,10 +1210,11 @@ mod tests {
         .unwrap();
         db::execute(
             &db,
-            "insert into api_config (id, path, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "insert into api_config (id, path, method, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             vec![
                 v("existing"),
                 v("/demo/items/get"),
+                v("POST"),
                 v("existing"),
                 v(""),
                 v("[]"),
@@ -1185,6 +1239,7 @@ mod tests {
                 name: Some("new".to_string()),
                 note: Some(String::new()),
                 path: Some("/demo/items/get".to_string()),
+                method: Some("POST".to_string()),
                 datasource_id: Some("ds-1".to_string()),
                 sql_list: Vec::new(),
                 params: Some("[]".to_string()),
@@ -1224,10 +1279,11 @@ mod tests {
         ] {
             db::execute(
                 &db,
-                "insert into api_config (id, path, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "insert into api_config (id, path, method, name, note, params, status, datasource_id, previlege, group_id, cache_plugin, cache_plugin_params, create_time, update_time, content_type, open_trans, json_param) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 vec![
                     v(id),
                     v(path),
+                    v("POST"),
                     v(name),
                     v(note),
                     v("[]"),
@@ -1291,6 +1347,7 @@ mod tests {
             "create table api_config (
                 id text primary key,
                 path text,
+                method text,
                 name text,
                 note text,
                 params text,

@@ -23,14 +23,17 @@ export default function ApiRequestPage() {
   const [result, setResult] = useState('');
 
   const contentType = detail?.contentType || 'application/json';
+  const method = detail?.method || 'POST';
   const isJson = contentType.startsWith('application/json');
+  const usesStructuredParams = method === 'GET' || method === 'DELETE' || !isJson;
   const requestUrl = `http://${address}/api/${detail?.path || ''}`.replace('/api//', '/api/');
   const curlCommand = generateCurlCommand({
+    method,
     url: requestUrl,
     contentType,
     token,
-    body: isJson ? jsonBody || '{}' : undefined,
-    params: isJson ? undefined : params,
+    body: usesStructuredParams ? undefined : jsonBody || '{}',
+    params: usesStructuredParams ? params : undefined,
   });
 
   useEffect(() => {
@@ -56,8 +59,8 @@ export default function ApiRequestPage() {
   async function send() {
     if (!detail?.path) return;
     try {
-      const body = isJson ? JSON.parse(jsonBody || '{}') : paramsToBody(params);
-      const response = await callUserApi(detail.path, body, contentType, token);
+      const body = usesStructuredParams ? paramsToBody(params) : JSON.parse(jsonBody || '{}');
+      const response = await callUserApi(detail.path, body, contentType, token, method);
       setResult(JSON.stringify(response, null, 2));
     } catch (error) {
       message.error(error instanceof Error ? error.message : String(error));
@@ -113,6 +116,9 @@ export default function ApiRequestPage() {
                     <Form.Item label="URL">
                       <Input value={requestUrl} readOnly />
                     </Form.Item>
+                    <Form.Item label="Method">
+                      <Input value={method} readOnly />
+                    </Form.Item>
                     <Form.Item label="Content-Type">
                       <Input value={contentType} readOnly />
                     </Form.Item>
@@ -120,8 +126,8 @@ export default function ApiRequestPage() {
                       <Input value={token} onChange={(event) => setToken(event.target.value)} />
                     </Form.Item>
 
-                    <Form.Item label={isJson ? '请求参数 JSON' : '请求参数'}>
-                      {isJson ? (
+                    <Form.Item label={usesStructuredParams ? '请求参数' : '请求参数 JSON'}>
+                      {!usesStructuredParams ? (
                         <Input.TextArea rows={10} value={jsonBody} onChange={(event) => setJsonBody(event.target.value)} />
                       ) : params.length ? (
                         <div className="request-param-list">

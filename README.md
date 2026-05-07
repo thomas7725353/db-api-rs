@@ -149,6 +149,8 @@ docs/superpowers/       Planning documents used during development
 - View SQL structure parameters are limited to safe identifiers and integers.
 - Multiple SQL statements are rejected by the runtime SQL transformer.
 - QueryBuilder uses SeaQuery to generate SQL for the selected database backend.
+- Published APIs have a configured HTTP method. New query APIs should use `GET`; write APIs should use `POST`, `PUT`, `PATCH`, or `DELETE`.
+- `GET` requests only read URL query parameters and are rejected if the configured SQL is not a query.
 - Access logs are written for successful and failed `/api/{path}` calls.
 
 ## Repository

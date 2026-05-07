@@ -11,7 +11,7 @@ use axum::{
     Json,
     body::Body,
     extract::{Path, Query, State},
-    http::{HeaderMap, Request, StatusCode},
+    http::{HeaderMap, Method, Request, StatusCode},
     response::IntoResponse,
 };
 use moka::future::Cache;
@@ -63,6 +63,7 @@ pub async fn handle_api(
 ) -> impl IntoResponse {
     let started = Instant::now();
     let timestamp = chrono::Utc::now().timestamp();
+    let request_method = request.method().clone();
     let url = format!("/api/{}", path);
     // 1. Get ApiConfig (Cache -> DB)
     let config = match load_api_config(&state, &path).await {
@@ -85,6 +86,23 @@ pub async fn handle_api(
         }
     };
     let api_id = config.id.clone();
+    let expected_method = configured_method(&config);
+    if let Err(message) = validate_request_method(&request_method, &expected_method) {
+        write_access_log(
+            &state,
+            AccessLogInput {
+                url,
+                status: StatusCode::METHOD_NOT_ALLOWED.as_u16() as i32,
+                duration: started.elapsed().as_millis() as i64,
+                timestamp,
+                app_id: None,
+                api_id,
+                error: Some(message.clone()),
+            },
+        )
+        .await;
+        return api_error(StatusCode::METHOD_NOT_ALLOWED, message).into_response();
+    }
 
     let app_id = match authorize_api(&state, &config, &headers).await {
         Ok(app_id) => app_id,
@@ -201,27 +219,31 @@ pub async fn handle_api(
         .unwrap_or("");
 
     // 5. Extract Params
-    let body_params = match parse_request_body(request).await {
-        Ok(params) => params,
-        Err(e) => {
-            let message = e.to_string();
-            write_access_log(
-                &state,
-                AccessLogInput {
-                    url,
-                    status: StatusCode::BAD_REQUEST.as_u16() as i32,
-                    duration: started.elapsed().as_millis() as i64,
-                    timestamp,
-                    app_id,
-                    api_id,
-                    error: Some(message.clone()),
-                },
-            )
-            .await;
-            return api_error(StatusCode::BAD_REQUEST, message).into_response();
-        }
+    let all_params = if request_method == Method::GET {
+        map_to_json(query_params)
+    } else {
+        let body_params = match parse_request_body(request).await {
+            Ok(params) => params,
+            Err(e) => {
+                let message = e.to_string();
+                write_access_log(
+                    &state,
+                    AccessLogInput {
+                        url,
+                        status: StatusCode::BAD_REQUEST.as_u16() as i32,
+                        duration: started.elapsed().as_millis() as i64,
+                        timestamp,
+                        app_id,
+                        api_id,
+                        error: Some(message.clone()),
+                    },
+                )
+                .await;
+                return api_error(StatusCode::BAD_REQUEST, message).into_response();
+            }
+        };
+        merge_json_objects(map_to_json(query_params), body_params)
     };
-    let all_params = merge_json_objects(map_to_json(query_params), body_params);
 
     if is_query_builder_config(&config) {
         let dsl = match serde_json::from_str::<QueryBuilderDsl>(sql) {
@@ -356,6 +378,24 @@ pub async fn handle_api(
         }
     };
 
+    let is_query = SqlTransformer::is_query(sql, dialect).unwrap_or(false);
+    if let Err(message) = reject_unsafe_get(&request_method, is_query) {
+        write_access_log(
+            &state,
+            AccessLogInput {
+                url,
+                status: StatusCode::METHOD_NOT_ALLOWED.as_u16() as i32,
+                duration: started.elapsed().as_millis() as i64,
+                timestamp,
+                app_id,
+                api_id,
+                error: Some(message.clone()),
+            },
+        )
+        .await;
+        return api_error(StatusCode::METHOD_NOT_ALLOWED, message).into_response();
+    }
+
     let db_values = match bind_param_values(&param_names, &all_params, config.params.as_deref()) {
         Ok(vals) => vals,
         Err(e) => {
@@ -378,7 +418,6 @@ pub async fn handle_api(
     };
 
     // 6. Execute SQL
-    let is_query = SqlTransformer::is_query(sql, dialect).unwrap_or(false);
     if is_query {
         let query_result = if should_return_single_row(&config, first_sql) {
             db::query_one_json(&data_db, &transformed_sql, db_values)
@@ -474,6 +513,33 @@ fn is_query_builder_config(config: &ApiConfig) -> bool {
         .first()
         .and_then(|sql| sql.transform_plugin.as_deref())
         .is_some_and(|plugin| plugin.eq_ignore_ascii_case("queryBuilder"))
+}
+
+fn configured_method(config: &ApiConfig) -> Method {
+    config
+        .method
+        .as_deref()
+        .map(str::trim)
+        .filter(|method| !method.is_empty())
+        .map(str::to_ascii_uppercase)
+        .and_then(|method| Method::from_bytes(method.as_bytes()).ok())
+        .unwrap_or(Method::POST)
+}
+
+fn validate_request_method(actual: &Method, expected: &Method) -> Result<(), String> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err("Method not allowed".to_string())
+    }
+}
+
+fn reject_unsafe_get(method: &Method, is_query: bool) -> Result<(), String> {
+    if method == Method::GET && !is_query {
+        Err("GET APIs can only execute query SQL".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 fn is_view_sql_config(config: &ApiConfig) -> bool {
@@ -922,6 +988,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn configured_method_defaults_to_post() {
+        let config = ApiConfig {
+            method: None,
+            ..empty_api_config()
+        };
+
+        assert_eq!(configured_method(&config), Method::POST);
+    }
+
+    #[test]
+    fn configured_method_reads_get() {
+        let config = ApiConfig {
+            method: Some("GET".to_string()),
+            ..empty_api_config()
+        };
+
+        assert_eq!(configured_method(&config), Method::GET);
+    }
+
+    #[test]
+    fn validate_request_method_rejects_mismatch() {
+        let error = validate_request_method(&Method::POST, &Method::GET).unwrap_err();
+
+        assert_eq!(error, "Method not allowed");
+    }
+
+    #[test]
+    fn reject_unsafe_get_blocks_get_non_query_sql() {
+        let error = reject_unsafe_get(&Method::GET, false).unwrap_err();
+
+        assert_eq!(error, "GET APIs can only execute query SQL");
+    }
+
+    #[test]
     fn result_type_object_marks_select_as_single_row_response() {
         assert!(is_single_row_response(Some("resultType=object")));
         assert!(is_single_row_response(Some("resultType=one")));
@@ -943,6 +1043,7 @@ mod tests {
             name: None,
             note: None,
             path: Some("demo/items/get".to_string()),
+            method: Some("GET".to_string()),
             datasource_id: None,
             sql_list: vec![],
             params: Some(r#"[{"name":"id","type":"bigint"}]"#.to_string()),
@@ -1013,6 +1114,7 @@ mod tests {
             name: None,
             note: None,
             path: None,
+            method: Some("POST".to_string()),
             datasource_id: None,
             sql_list: Vec::new(),
             params: None,

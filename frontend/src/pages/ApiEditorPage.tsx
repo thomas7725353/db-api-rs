@@ -2,7 +2,7 @@ import { Alert, App, Button, Card, Form, Input, Radio, Select, Space, Tabs, Typo
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { apiConfigService, datasourceService, groupService, tableService } from '../api/services';
-import type { ApiConfig, ApiEngine, ApiGroup, DataSource, ParamSpec, QueryBuilderDsl, TableColumn } from '../api/types';
+import type { ApiConfig, ApiEngine, ApiGroup, ApiMethod, DataSource, ParamSpec, QueryBuilderDsl, TableColumn } from '../api/types';
 import ParamEditor, { parseParamSpecs, stringifyParamSpecs } from '../components/ParamEditor';
 import QueryBuilderEditor from '../components/QueryBuilderEditor';
 import {
@@ -52,6 +52,24 @@ const defaultViewPreviewParams = JSON.stringify(
 );
 
 type QueryBuilderResponseMode = ApiResponseMode;
+
+const methodOptions: Array<{ value: ApiMethod; label: string }> = [
+  { value: 'GET', label: 'GET：查询' },
+  { value: 'POST', label: 'POST：新增' },
+  { value: 'PUT', label: 'PUT：替换' },
+  { value: 'PATCH', label: 'PATCH：更新' },
+  { value: 'DELETE', label: 'DELETE：删除' },
+];
+
+function inferMethod(engine: ApiEngine, sqlText: string): ApiMethod {
+  if (engine === 'queryBuilder' || engine === 'viewSql') return 'GET';
+  const firstWord = sqlText.trim().match(/^([a-z]+)/i)?.[1]?.toLowerCase();
+  if (firstWord === 'select' || firstWord === 'with' || firstWord === 'show') return 'GET';
+  if (firstWord === 'insert') return 'POST';
+  if (firstWord === 'update') return 'PATCH';
+  if (firstWord === 'delete') return 'DELETE';
+  return 'POST';
+}
 
 export default function ApiEditorPage() {
   const { id } = useParams();
@@ -116,6 +134,11 @@ export default function ApiEditorPage() {
       }
     });
   }, [form, id]);
+
+  useEffect(() => {
+    if (isEdit) return;
+    form.setFieldsValue({ method: inferMethod(engine, sqlText) });
+  }, [engine, form, isEdit, sqlText]);
 
   useEffect(() => {
     let ignore = false;
@@ -303,6 +326,7 @@ export default function ApiEditorPage() {
             ? '[]'
             : stringifyParamSpecs(params),
       sqlList,
+      method: values.method || inferMethod(engine, sqlText),
       contentType: values.contentType || 'application/json',
       jsonParam: contentType === 'application/json' ? jsonParam : undefined,
       previlege: values.previlege ?? 1,
@@ -339,6 +363,9 @@ export default function ApiEditorPage() {
             </Form.Item>
             <Form.Item name="path" label="路径" rules={[{ required: true }]}>
               <Input placeholder="/api/demo/items/list 或 demo/items/list" />
+            </Form.Item>
+            <Form.Item name="method" label="Method" rules={[{ required: true }]}>
+              <Select options={methodOptions} />
             </Form.Item>
             <Form.Item name="datasourceId" label="数据源" rules={[{ required: true }]}>
               <Select options={datasourceOptions} />

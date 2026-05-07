@@ -1,6 +1,6 @@
 ---
 name: dbapi-demo-crud
-description: Use when seeding or verifying the local Rust standalone db-api-rs Demo CRUD group, demo_items SQLite table, private CRUD/list APIs, app authorization, token generation, authenticated curl calls, and access-log monitor data.
+description: Use when seeding or verifying the local Rust standalone db-api-rs Demo CRUD group, demo_items SQLite table, private CRUD/qb-list APIs, app authorization, token generation, authenticated curl calls, and access-log monitor data.
 ---
 
 # db-api-rs Demo CRUD
@@ -40,7 +40,7 @@ Expected API paths:
 - `demo/items/get`
 - `demo/items/update`
 - `demo/items/delete`
-- `demo/items/list`
+- `/demo/items/qb-list`
 
 Do not create separate `filter` or `count` APIs. The list API is the single list endpoint and must support filter, pagination, and total.
 
@@ -124,12 +124,12 @@ rtk curl -sS -X DELETE \
 
 Expected: `success=true`, `data.rowsAffected` is `0` or `1`.
 
-### List With Filter, Limit, Offset, And Total
+### QueryBuilder List With Filter, Limit, Offset, And Total
 
 ```bash
 rtk curl -sS \
   -H "Authorization: $TOKEN" \
-  'http://127.0.0.1:8520/api/demo/items/list?keyword=&status=&limit=10&offset=0'
+  'http://127.0.0.1:8520/api/demo/items/qb-list?keyword=&status=&limit=10&offset=0'
 ```
 
 Filtered example:
@@ -137,7 +137,7 @@ Filtered example:
 ```bash
 rtk curl -sS \
   -H "Authorization: $TOKEN" \
-  'http://127.0.0.1:8520/api/demo/items/list?keyword=Alpha&status=active&limit=10&offset=0'
+  'http://127.0.0.1:8520/api/demo/items/qb-list?keyword=Alpha&status=active&limit=10&offset=0'
 ```
 
 Expected: `success=true`; each returned row includes `total`. Empty result sets return `data=[]`, so consumers that need total for empty pages must query offset `0` or handle empty totals.
@@ -158,7 +158,7 @@ Then verify with curl:
 ```bash
 rtk curl -sS \
   -H "Authorization: $TOKEN" \
-  'http://127.0.0.1:8520/api/demo/items/list?keyword=&status=&limit=10&offset=0'
+  'http://127.0.0.1:8520/api/demo/items/qb-list?keyword=&status=&limit=10&offset=0'
 ```
 
 The response must be JSON with `success:true`.
@@ -167,7 +167,7 @@ Verify token rejection:
 
 ```bash
 rtk curl -sS -w '\nHTTP_STATUS=%{http_code}\n' \
-  'http://127.0.0.1:8520/api/demo/items/list?keyword=&status=&limit=10&offset=0'
+  'http://127.0.0.1:8520/api/demo/items/qb-list?keyword=&status=&limit=10&offset=0'
 ```
 
 Expected: HTTP `401` and JSON `success=false`, `msg=No Token!`.
@@ -189,4 +189,4 @@ rtk curl -sS -X POST \
   'http://127.0.0.1:8520/access/search'
 ```
 
-Expected: `/access/top5api` includes `/api/demo/items/list`, and `/access/search` includes both `401` no-token rows and `200` token-authenticated rows after the verification calls above.
+Expected: `/access/top5api` includes `/api/demo/items/qb-list`, and `/access/search` includes both `401` no-token rows and `200` token-authenticated rows after the verification calls above.

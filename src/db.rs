@@ -58,11 +58,6 @@ pub async fn connect_metadata(url: &str) -> Result<DbConn> {
     connect_url(url).await
 }
 
-#[allow(dead_code)]
-pub async fn connect_data_source(ds: &DataSource) -> Result<DbConn> {
-    connect_data_source_with_base(ds, None).await
-}
-
 async fn connect_data_source_with_base(
     ds: &DataSource,
     sqlite_base_dir: Option<&Path>,
@@ -86,16 +81,6 @@ async fn connect_url(url: &str) -> Result<DbConn> {
     let conn = Database::connect(url).await?;
     let backend = conn.get_database_backend();
     Ok(DbConn { conn, backend })
-}
-
-#[allow(dead_code)]
-pub fn normalize_url(
-    db_type: &str,
-    url: &str,
-    username: Option<&str>,
-    password: Option<&str>,
-) -> Result<String> {
-    normalize_url_with_base(db_type, url, username, password, None)
 }
 
 fn normalize_url_with_base(
@@ -275,15 +260,16 @@ mod tests {
     #[test]
     fn normalizes_sqlite_urls() {
         assert_eq!(
-            normalize_url("sqlite", "jdbc:sqlite:/tmp/dbapi.db", None, None).unwrap(),
+            normalize_url_with_base("sqlite", "jdbc:sqlite:/tmp/dbapi.db", None, None, None)
+                .unwrap(),
             "sqlite:///tmp/dbapi.db?mode=rwc"
         );
         assert_eq!(
-            normalize_url("sqlite", "sqlite://../data.db", None, None).unwrap(),
+            normalize_url_with_base("sqlite", "sqlite://../data.db", None, None, None).unwrap(),
             "sqlite://../data.db"
         );
         assert_eq!(
-            normalize_url("sqlite", "jdbc:sqlite::memory:", None, None).unwrap(),
+            normalize_url_with_base("sqlite", "jdbc:sqlite::memory:", None, None, None).unwrap(),
             "sqlite::memory:"
         );
     }
@@ -329,15 +315,23 @@ mod tests {
     #[test]
     fn normalizes_server_urls() {
         assert_eq!(
-            normalize_url("mysql", "jdbc:mysql://127.0.0.1/db", Some("u"), Some("p")).unwrap(),
+            normalize_url_with_base(
+                "mysql",
+                "jdbc:mysql://127.0.0.1/db",
+                Some("u"),
+                Some("p"),
+                None,
+            )
+            .unwrap(),
             "mysql://u:p@127.0.0.1/db"
         );
         assert_eq!(
-            normalize_url(
+            normalize_url_with_base(
                 "postgresql",
                 "jdbc:postgresql://127.0.0.1/db",
                 Some("u"),
                 Some("p"),
+                None,
             )
             .unwrap(),
             "postgres://u:p@127.0.0.1/db"

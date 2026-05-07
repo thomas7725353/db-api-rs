@@ -1,5 +1,6 @@
 use crate::manifest::{
-    DbapiManifest, DraftTableInput, GeneratedBundle, MANIFEST_VERSION, ManifestSource,
+    DbapiManifest, DraftSqlInput, DraftTableInput, GeneratedBundle, MANIFEST_VERSION,
+    ManifestSource,
 };
 use crate::model::{ApiConfig, ApiConfigExport, ApiGroup, ApiSql};
 use crate::schema::{ColumnInfo, TableSchema};
@@ -201,6 +202,60 @@ pub fn draft_table_crud_bundle(
     })
 }
 
+pub fn draft_sql_api_bundle(input: DraftSqlInput) -> anyhow::Result<GeneratedBundle> {
+    let resource_path = normalize_resource_path(&input.resource_path)?;
+    let method = infer_method_from_sql(&input.sql);
+    let params = extract_dollar_params(&input.sql)
+        .into_iter()
+        .map(|name| json!({"name": name, "type": "string"}))
+        .collect::<Vec<_>>();
+
+    let api = base_api(
+        &input.api_id,
+        &resource_path,
+        method,
+        &input.api_name,
+        "Generated from SQL or agent-authored requirement",
+        params,
+        &input.datasource_id,
+        &input.group.id,
+        1,
+    );
+    let sql = ApiSql {
+        id: None,
+        api_id: Some(input.api_id),
+        sql_text: Some(input.sql),
+        transform_plugin: Some(input.engine),
+        transform_plugin_params: Some(String::new()),
+    };
+
+    Ok(GeneratedBundle {
+        manifest: DbapiManifest {
+            version: MANIFEST_VERSION.to_string(),
+            source: ManifestSource {
+                datasource_id: input.datasource_id,
+                table: None,
+                primary_key: None,
+                resource_path: resource_path.clone(),
+            },
+            group_file: "api_group_config.json".to_string(),
+            api_file: "api_config.json".to_string(),
+            curl_file: "curl.md".to_string(),
+            verify_file: "VERIFY.md".to_string(),
+        },
+        groups: vec![ApiGroup {
+            id: Some(input.group.id),
+            name: Some(input.group.name),
+        }],
+        api_config: ApiConfigExport {
+            api: vec![api],
+            sql: vec![sql],
+        },
+        curl_md: generate_single_api_curl_md(&resource_path),
+        verify_md: generate_verify_md(),
+    })
+}
+
 struct SqlApiSpec<'a> {
     id: String,
     path: String,
@@ -380,6 +435,70 @@ fn normalize_resource_path(path: &str) -> anyhow::Result<String> {
     Ok(trimmed.to_string())
 }
 
+fn infer_method_from_sql(sql: &str) -> &'static str {
+    match sql
+        .trim_start()
+        .split(|ch: char| ch.is_whitespace() || ch == '(')
+        .find(|part| !part.is_empty())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "select" | "with" | "show" => "GET",
+        "insert" => "POST",
+        "update" => "PATCH",
+        "delete" => "DELETE",
+        _ => "POST",
+    }
+}
+
+fn extract_dollar_params(sql: &str) -> Vec<String> {
+    let mut params = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut chars = sql.char_indices().peekable();
+    let mut in_single_quote = false;
+
+    while let Some((_, ch)) = chars.next() {
+        if ch == '\'' {
+            if in_single_quote && chars.peek().is_some_and(|(_, next)| *next == '\'') {
+                chars.next();
+            } else {
+                in_single_quote = !in_single_quote;
+            }
+            continue;
+        }
+
+        if in_single_quote || ch != '$' {
+            continue;
+        }
+
+        let Some((start, first)) = chars.peek().copied() else {
+            continue;
+        };
+        if !(first.is_ascii_alphabetic() || first == '_') {
+            continue;
+        }
+
+        let mut end = start + first.len_utf8();
+        chars.next();
+        while let Some((idx, next)) = chars.peek().copied() {
+            if next.is_ascii_alphanumeric() || next == '_' {
+                end = idx + next.len_utf8();
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        let param = sql[start..end].to_string();
+        if seen.insert(param.clone()) {
+            params.push(param);
+        }
+    }
+
+    params
+}
+
 fn validate_identifier(kind: &str, value: &str) -> anyhow::Result<()> {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
@@ -482,6 +601,12 @@ fn generate_curl_md(resource_path: &str) -> String {
     )
 }
 
+fn generate_single_api_curl_md(resource_path: &str) -> String {
+    format!(
+        "# cURL Examples\n\n```bash\ncurl -sS 'http://127.0.0.1:8520/api/{resource_path}'\n```\n"
+    )
+}
+
 fn generate_verify_md() -> String {
     "# Verify\n\n1. Validate generated API bundle.\n2. Apply group config.\n3. Apply API config.\n4. Generate token if APIs are private.\n5. Run cURL examples.\n"
         .to_string()
@@ -490,7 +615,7 @@ fn generate_verify_md() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{DraftTableInput, ManifestGroup};
+    use crate::manifest::{DraftSqlInput, DraftTableInput, ManifestGroup};
     use crate::schema::{ColumnInfo, TableSchema};
 
     #[test]
@@ -574,6 +699,40 @@ mod tests {
         assert!(!view_sql.contains("columns | ident_list"));
         assert!(bundle.curl_md.contains("/api/demo/items/qb-list"));
         assert!(bundle.verify_md.contains("Validate generated API bundle"));
+    }
+
+    #[test]
+    fn sql_bundle_generates_single_api_with_method_and_params() {
+        let bundle = draft_sql_api_bundle(DraftSqlInput {
+            datasource_id: "postgres_demo".to_string(),
+            resource_path: "demo/items/custom-search".to_string(),
+            api_id: "demo_items_custom_search".to_string(),
+            api_name: "Demo Items Custom Search".to_string(),
+            group: ManifestGroup {
+                id: "demo_items_group".to_string(),
+                name: "Demo Items".to_string(),
+            },
+            sql: "select id, name from demo_items where status = $status".to_string(),
+            engine: "sql".to_string(),
+        })
+        .unwrap();
+
+        assert_eq!(bundle.api_config.api[0].method.as_deref(), Some("GET"));
+        assert_eq!(
+            bundle.api_config.api[0].path.as_deref(),
+            Some("demo/items/custom-search")
+        );
+        assert_eq!(
+            bundle.api_config.sql[0].transform_plugin.as_deref(),
+            Some("sql")
+        );
+        assert!(
+            bundle.api_config.api[0]
+                .params
+                .as_deref()
+                .unwrap()
+                .contains("status")
+        );
     }
 
     #[test]

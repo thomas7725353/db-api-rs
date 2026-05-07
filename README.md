@@ -32,7 +32,7 @@ Local coding agents should read this README first and use the repo-local skills 
 - `dbapi-token-workflow`
 - `dbapi-export-import-workflow`
 
-MCP-capable agents can connect to the sidecar on `127.0.0.1:8521`.
+MCP-capable agents can connect to the sidecar at `http://127.0.0.1:8521/mcp`.
 
 When generating table APIs, always use the provided `resource_path` exactly. Do not guess paths from table names. If API creation, import/export, token handling, bundle generation, or apply behavior changes, update the repo-local skills in the same change so agents keep using the current workflow.
 
@@ -184,10 +184,11 @@ Draft table APIs:
 ```bash
 cargo run -- bundle draft-table \
   --base-url http://127.0.0.1:8520 \
-  --datasource postgres_demo \
+  --datasource-id postgres_demo \
   --table demo_items \
   --resource-path pg/demo/items \
-  --group-id pg_demo_items \
+  --group-id demo_items_group \
+  --group-name "PG Demo Items" \
   --out bundles/pg-demo-items
 ```
 
@@ -224,22 +225,22 @@ Draft a SQL API when you need a single hand-written query or View SQL endpoint:
 
 ```bash
 cargo run -- bundle draft-sql \
-  --base-url http://127.0.0.1:8520 \
-  --datasource postgres_demo \
-  --path pg/demo/items/by-status \
-  --group-id pg_demo_items \
-  --name "PG Demo Items By Status" \
-  --method GET \
+  --datasource-id postgres_demo \
+  --resource-path demo/items/custom-search \
+  --api-id demo_items_custom_search \
+  --api-name "Demo Items Custom Search" \
+  --group-id demo_items_group \
+  --group-name "PG Demo Items" \
+  --sql 'select id, name from demo_items where status = $status' \
   --engine sql \
-  --sql "select id, name, status from demo_items where status = $status order by id" \
-  --out bundles/pg-demo-items-by-status
+  --out target/dbapi-bundles/demo_items_custom_search
 ```
 
 SQL value parameters use named placeholders such as `$status`; positional placeholders such as `$1` are rejected. Use engine `sql` for plain SQL APIs or `viewSql` for View SQL APIs.
 
 ## MCP Sidecar
 
-Docker Compose starts an MCP HTTP sidecar on `127.0.0.1:8521`:
+Docker Compose starts an MCP HTTP sidecar at `http://127.0.0.1:8521/mcp`:
 
 ```bash
 docker compose up -d --build

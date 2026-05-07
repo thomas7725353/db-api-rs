@@ -178,6 +178,7 @@ pub async fn serve(args: McpArgs) -> anyhow::Result<()> {
     let client = DbapiClient::new(args.base_url)?;
     let allow_write = args.allow_write;
     let cancellation_token = CancellationToken::new();
+    let shutdown_token = cancellation_token.clone();
     let service: StreamableHttpService<DbapiMcpServer, LocalSessionManager> =
         StreamableHttpService::new(
             move || Ok(DbapiMcpServer::new(client.clone(), allow_write)),
@@ -197,6 +198,7 @@ pub async fn serve(args: McpArgs) -> anyhow::Result<()> {
             if let Err(error) = tokio::signal::ctrl_c().await {
                 tracing::warn!("failed waiting for shutdown signal: {error}");
             }
+            shutdown_token.cancel();
         })
         .await?;
     Ok(())

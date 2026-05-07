@@ -25,6 +25,6 @@ COPY --from=frontend /app/static /app/static
 
 ENV RUST_LOG=info
 ENV DB_API_METADATA_URL=sqlite:///data/data.db
-EXPOSE 8520
+EXPOSE 8520 8521
 
 CMD ["/app/db-api-rs"]

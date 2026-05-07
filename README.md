@@ -20,6 +20,22 @@ The runtime lives at the repository root and is implemented with Axum, SeaORM/SQ
   - `object`: return a single row object.
   - `count`: return only the total.
 
+## AI and Agent Workflows
+
+Humans should start with [Quick Start](#quick-start), then use the web UI or the DBAPI bundle commands below.
+
+Local coding agents should read this README first and use the repo-local skills under `skills/` for repeatable API work:
+
+- `dbapi-generate-table-apis`
+- `dbapi-generate-sql-api`
+- `dbapi-apply-api-bundle`
+- `dbapi-token-workflow`
+- `dbapi-export-import-workflow`
+
+MCP-capable agents can connect to the sidecar on `127.0.0.1:8521`.
+
+When generating table APIs, always use the provided `resource_path` exactly. Do not guess paths from table names. If API creation, import/export, token handling, bundle generation, or apply behavior changes, update the repo-local skills in the same change so agents keep using the current workflow.
+
 ## View SQL Templates
 
 View SQL uses MiniJinja with custom `[[ ... ]]` delimiters for safe SQL structure fragments. Normal values should still use `$param` bind parameters.
@@ -152,6 +168,95 @@ docs/superpowers/       Planning documents used during development
 - Published APIs have a configured HTTP method. New query APIs should use `GET`; write APIs should use `POST`, `PUT`, `PATCH`, or `DELETE`.
 - `GET` requests only read URL query parameters and are rejected if the configured SQL is not a query.
 - Access logs are written for successful and failed `/api/{path}` calls.
+
+## DBAPI Bundle Workflow
+
+The bundle workflow is file-first: generate reviewable files, validate them, and apply only after confirmation. Generated bundle directories contain:
+
+- `dbapi_manifest.json`: bundle metadata and generated API entries.
+- `api_group_config.json`: API group import payload.
+- `api_config.json`: API config import payload.
+- `curl.md`: example calls for the generated endpoints.
+- `VERIFY.md`: validation and manual verification checklist.
+
+Draft table APIs:
+
+```bash
+cargo run -- bundle draft-table \
+  --base-url http://127.0.0.1:8520 \
+  --datasource postgres_demo \
+  --table demo_items \
+  --resource-path pg/demo/items \
+  --group-id pg_demo_items \
+  --out bundles/pg-demo-items
+```
+
+`--primary-key` is optional. Add `--primary-key id` only when metadata cannot infer the primary key or when you need to override it.
+
+Validate before apply:
+
+```bash
+cargo run -- bundle validate --dir bundles/pg-demo-items
+```
+
+Apply only after human confirmation:
+
+```bash
+cargo run -- bundle apply \
+  --base-url http://127.0.0.1:8520 \
+  --dir bundles/pg-demo-items \
+  --allow-write
+```
+
+Default table generation creates these API paths under the chosen `resource_path`:
+
+| Path | Method | Engine |
+| --- | --- | --- |
+| `{resource_path}/create` | POST | SQL |
+| `{resource_path}/get` | GET | QueryBuilder |
+| `{resource_path}/update` | PUT | SQL |
+| `{resource_path}/delete` | DELETE | SQL |
+| `{resource_path}/qb-list` | GET | QueryBuilder |
+| `{resource_path}/table` | GET | QueryBuilder |
+| `{resource_path}/view-sql-list` | GET | View SQL |
+
+Draft a SQL API when you need a single hand-written query or View SQL endpoint:
+
+```bash
+cargo run -- bundle draft-sql \
+  --base-url http://127.0.0.1:8520 \
+  --datasource postgres_demo \
+  --path pg/demo/items/by-status \
+  --group-id pg_demo_items \
+  --name "PG Demo Items By Status" \
+  --method GET \
+  --engine sql \
+  --sql "select id, name, status from demo_items where status = $status order by id" \
+  --out bundles/pg-demo-items-by-status
+```
+
+SQL value parameters use named placeholders such as `$status`; positional placeholders such as `$1` are rejected. Use engine `sql` for plain SQL APIs or `viewSql` for View SQL APIs.
+
+## MCP Sidecar
+
+Docker Compose starts an MCP HTTP sidecar on `127.0.0.1:8521`:
+
+```bash
+docker compose up -d --build
+```
+
+The sidecar defaults to read/draft/validate mode. Writes require both starting the process with `--allow-write` and passing tool request `allowWrite=true`.
+
+Available tools:
+
+- `list_datasources`
+- `inspect_table_schema`
+- `draft_table_crud_bundle`
+- `draft_sql_api_bundle`
+- `validate_api_bundle`
+- `apply_api_config_bundle`
+
+The sidecar calls the existing HTTP management routes on the main DBAPI service. It does not directly read or write `data.db`.
 
 ## Repository
 

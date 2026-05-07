@@ -24,12 +24,33 @@ services:
       RUST_LOG: info
       DB_API_METADATA_URL: sqlite:///data/data.db
     ports:
-      - "8520:8520"
+      - "127.0.0.1:8520:8520"
     volumes:
       - ./data.db:/data/data.db
     depends_on:
       postgres:
         condition: service_healthy
+
+  dbapi-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+      - /app/db-api-rs
+      - mcp
+      - --transport
+      - http
+      - --listen
+      - 0.0.0.0:8521
+      - --base-url
+      - http://db-api-rs:8520
+    environment:
+      RUST_LOG: info
+    ports:
+      - "127.0.0.1:8521:8521"
+    depends_on:
+      db-api-rs:
+        condition: service_started
 
 volumes:
   pg-data:

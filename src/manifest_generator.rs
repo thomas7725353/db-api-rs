@@ -206,6 +206,7 @@ pub fn draft_sql_api_bundle(input: DraftSqlInput) -> anyhow::Result<GeneratedBun
     let resource_path = normalize_resource_path(&input.resource_path)?;
     let method = infer_method_from_sql(&input.sql);
     let engine = normalize_sql_engine(&input.engine)?;
+    reject_numeric_dollar_params(&input.sql)?;
     let params = extract_dollar_params(&input.sql)
         .into_iter()
         .map(|name| json!({"name": name, "type": "string"}))
@@ -525,6 +526,54 @@ fn extract_dollar_params(sql: &str) -> Vec<String> {
     }
 
     params
+}
+
+fn reject_numeric_dollar_params(sql: &str) -> anyhow::Result<()> {
+    let bytes = sql.as_bytes();
+    let mut idx = 0;
+
+    while idx < bytes.len() {
+        if bytes[idx] == b'\'' {
+            idx = skip_single_quoted_string(bytes, idx);
+            continue;
+        }
+        if bytes[idx] == b'"' {
+            idx = skip_double_quoted_identifier(bytes, idx);
+            continue;
+        }
+        if bytes[idx..].starts_with(b"--") {
+            idx = skip_line_comment(bytes, idx);
+            continue;
+        }
+        if bytes[idx..].starts_with(b"/*") {
+            idx = skip_block_comment(bytes, idx);
+            continue;
+        }
+        if let Some(end) = skip_dollar_quoted_string(sql, idx) {
+            idx = end;
+            continue;
+        }
+        if bytes[idx] != b'$' {
+            idx += 1;
+            continue;
+        }
+
+        let start = idx + 1;
+        if start < bytes.len() && bytes[start].is_ascii_digit() {
+            let mut end = start + 1;
+            while end < bytes.len() && bytes[end].is_ascii_digit() {
+                end += 1;
+            }
+            return Err(anyhow!(
+                "numeric placeholders are not supported: {}",
+                &sql[idx..end]
+            ));
+        }
+
+        idx += 1;
+    }
+
+    Ok(())
 }
 
 fn normalize_sql_engine(engine: &str) -> anyhow::Result<&'static str> {
@@ -920,6 +969,26 @@ mod tests {
         .to_string();
 
         assert_eq!(error, "unsupported engine: view_sql");
+    }
+
+    #[test]
+    fn sql_bundle_rejects_numeric_placeholders() {
+        let error = draft_sql_api_bundle(DraftSqlInput {
+            datasource_id: "postgres_demo".to_string(),
+            resource_path: "demo/items/custom-search".to_string(),
+            api_id: "demo_items_custom_search".to_string(),
+            api_name: "Demo Items Custom Search".to_string(),
+            group: ManifestGroup {
+                id: "demo_items_group".to_string(),
+                name: "Demo Items".to_string(),
+            },
+            sql: "-- $2\nselect * from demo_items where id = $1".to_string(),
+            engine: "sql".to_string(),
+        })
+        .unwrap_err()
+        .to_string();
+
+        assert_eq!(error, "numeric placeholders are not supported: $1");
     }
 
     #[test]

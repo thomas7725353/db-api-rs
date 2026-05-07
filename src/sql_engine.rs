@@ -99,14 +99,10 @@ impl SqlTransformer {
                 while end < bytes.len() && bytes[end].is_ascii_digit() {
                     end += 1;
                 }
-                if dialect_type == DialectType::PostgreSql
-                    && let Ok(position) = sql[start..end].parse::<usize>()
-                {
-                    index = index.max(position);
-                }
-                transformed.push_str(&sql[cursor..end]);
-                cursor = end;
-                continue;
+                return Err(anyhow!(
+                    "numeric placeholders are not supported: {}",
+                    &sql[cursor..end]
+                ));
             }
             if start >= bytes.len() || !is_param_start(bytes[start]) {
                 transformed.push('$');
@@ -758,14 +754,28 @@ mod tests {
     }
 
     #[test]
-    fn test_named_params_preserve_positional_placeholders() {
-        let sql = "SELECT * FROM users WHERE id = $1 AND name = $name";
+    fn test_numeric_placeholders_are_rejected() {
+        let error =
+            SqlTransformer::transform("SELECT * FROM t WHERE id = $1", DialectType::PostgreSql)
+                .unwrap_err()
+                .to_string();
+
+        assert!(error.contains("numeric placeholders are not supported"));
+    }
+
+    #[test]
+    fn test_numeric_placeholder_like_text_is_skipped_in_comments_and_quotes() {
+        let sql = "-- $1\nSELECT '$2', \"col_$3\", $$ $4 $$, $tag$ $5 $tag$, $real";
         let (transformed, params) =
             SqlTransformer::replace_named_params(sql, DialectType::PostgreSql).unwrap();
 
-        assert!(transformed.contains("id = $1"));
-        assert!(transformed.contains("name = $2"));
-        assert_eq!(params, vec!["name".to_string()]);
+        assert!(transformed.contains("-- $1"));
+        assert!(transformed.contains("'$2'"));
+        assert!(transformed.contains("\"col_$3\""));
+        assert!(transformed.contains("$$ $4 $$"));
+        assert!(transformed.contains("$tag$ $5 $tag$"));
+        assert!(transformed.ends_with("$1"));
+        assert_eq!(params, vec!["real".to_string()]);
     }
 
     #[test]

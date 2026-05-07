@@ -107,7 +107,7 @@ pub async fn run_bundle_command(args: BundleArgs) -> anyhow::Result<()> {
         }
         BundleCommand::Apply(args) => {
             if !args.allow_write {
-                anyhow::bail!("apply requires --allow-write=true");
+                anyhow::bail!("apply requires --allow-write");
             }
             let client = crate::dbapi_client::DbapiClient::new(args.base_url)?;
             let groups = read_group_file(&args.dir)

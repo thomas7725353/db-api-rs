@@ -1,5 +1,5 @@
 use crate::manifest::ValidationReport;
-use crate::model::{ApiConfigExport, ApiGroup, ApiSql};
+use crate::model::{ApiConfig, ApiConfigExport, ApiGroup, ApiSql};
 use std::collections::{HashMap, HashSet};
 
 pub fn validate_bundle_shape(groups: &[ApiGroup], bundle: &ApiConfigExport) -> ValidationReport {
@@ -103,27 +103,92 @@ pub async fn validate_against_server(
     bundle: &ApiConfigExport,
 ) -> anyhow::Result<ValidationReport> {
     let mut report = validate_bundle_shape(groups, bundle);
+    if !report.success {
+        return Ok(report);
+    }
+
     let datasources = client.list_datasources().await?;
+    let existing_groups = client.list_groups().await?;
+    let existing_apis = client.list_api_configs().await?;
+    validate_server_state(
+        &mut report,
+        groups,
+        bundle,
+        &datasources,
+        &existing_groups,
+        &existing_apis,
+    );
+
+    Ok(report)
+}
+
+pub(crate) fn validate_server_state(
+    report: &mut ValidationReport,
+    groups: &[ApiGroup],
+    bundle: &ApiConfigExport,
+    datasources: &[crate::model::DataSource],
+    existing_groups: &[ApiGroup],
+    existing_apis: &[ApiConfig],
+) {
     let datasource_ids = datasources
         .iter()
         .filter_map(|datasource| datasource.id.as_deref())
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .collect::<HashSet<_>>();
+    let server_group_ids = existing_groups
+        .iter()
+        .filter_map(|group| group.id.as_deref())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .collect::<HashSet<_>>();
+    let server_group_names = existing_groups
+        .iter()
+        .filter_map(|group| group.name.as_deref())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect::<HashSet<_>>();
+    let server_api_ids = existing_apis
+        .iter()
+        .filter_map(|api| api.id.as_deref())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .collect::<HashSet<_>>();
+    let server_api_paths = existing_apis
+        .iter()
+        .filter_map(|api| api.path.as_deref())
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .collect::<HashSet<_>>();
+
+    for group in groups {
+        let id = trimmed(group.id.as_deref());
+        let name = trimmed(group.name.as_deref());
+        if !id.is_empty() && server_group_ids.contains(id) {
+            report.error(format!("group id already exists on server: {id}"));
+        }
+        if !name.is_empty() && server_group_names.contains(name) {
+            report.error(format!("group name already exists on server: {name}"));
+        }
+    }
 
     for api in &bundle.api {
+        let id = trimmed(api.id.as_deref());
+        let path = trimmed(api.path.as_deref());
         let datasource_id = trimmed(api.datasource_id.as_deref());
         if !datasource_id.is_empty() && !datasource_ids.contains(datasource_id) {
-            let id = trimmed(api.id.as_deref());
-            let path = trimmed(api.path.as_deref());
             report.error(format!(
                 "{}: {datasource_id}",
                 api_context("datasource does not exist", id, path)
             ));
         }
+        if !id.is_empty() && server_api_ids.contains(id) {
+            report.error(format!("api id already exists on server: {id}"));
+        }
+        if !path.is_empty() && server_api_paths.contains(path) {
+            report.error(format!("api path already exists on server: {path}"));
+        }
     }
-
-    Ok(report)
 }
 
 fn validate_top_level_sql_row(
@@ -172,7 +237,7 @@ fn api_context(message: &str, id: &str, path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ApiConfig, ApiSql};
+    use crate::model::{ApiConfig, ApiSql, DataSource};
 
     #[test]
     fn rejects_leading_slash_and_duplicate_paths() {
@@ -306,6 +371,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rejects_server_group_and_api_conflicts() {
+        let bundle = ApiConfigExport {
+            api: vec![api("known", "demo/items/get")],
+            sql: vec![sql("known")],
+        };
+        let mut report = validate_bundle_shape(&groups(), &bundle);
+
+        validate_server_state(
+            &mut report,
+            &groups(),
+            &bundle,
+            &[datasource("ds")],
+            &groups(),
+            &[api("known", "demo/items/get")],
+        );
+
+        assert!(!report.success);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("group id already exists on server: group"))
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("group name already exists on server: Group"))
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("api id already exists on server: known"))
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("api path already exists on server: demo/items/get"))
+        );
+    }
+
+    #[tokio::test]
+    async fn local_shape_errors_skip_server_validation() {
+        let bundle = ApiConfigExport {
+            api: vec![api("known", "/demo/items/get")],
+            sql: vec![sql("known")],
+        };
+        let client = crate::dbapi_client::DbapiClient::new("http://127.0.0.1:9").unwrap();
+
+        let report = validate_against_server(&client, &groups(), &bundle)
+            .await
+            .unwrap();
+
+        assert!(!report.success);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("api path must not start with /"))
+        );
+    }
+
     fn api(id: &str, path: &str) -> ApiConfig {
         ApiConfig {
             id: Some(id.to_string()),
@@ -345,6 +475,23 @@ mod tests {
             sql_text: Some("select 1".to_string()),
             transform_plugin: Some("sql".to_string()),
             transform_plugin_params: None,
+        }
+    }
+
+    fn datasource(id: &str) -> DataSource {
+        DataSource {
+            id: Some(id.to_string()),
+            name: Some(id.to_string()),
+            note: None,
+            url: None,
+            username: None,
+            password: None,
+            db_type: None,
+            driver: None,
+            table_sql: None,
+            create_time: None,
+            update_time: None,
+            edit_password: false,
         }
     }
 }

@@ -1,4 +1,4 @@
-use crate::model::{AppInfo, DataSource};
+use crate::model::{ApiConfig, ApiGroup, AppInfo, DataSource};
 use crate::schema::{ColumnInfo, TableSchema};
 use anyhow::{Context, anyhow};
 use reqwest::multipart;
@@ -30,6 +30,14 @@ impl DbapiClient {
 
     pub async fn list_datasources(&self) -> anyhow::Result<Vec<DataSource>> {
         self.post_json("/datasource/getAll", &json!({})).await
+    }
+
+    pub async fn list_groups(&self) -> anyhow::Result<Vec<ApiGroup>> {
+        self.get_json("/group/getAll").await
+    }
+
+    pub async fn list_api_configs(&self) -> anyhow::Result<Vec<ApiConfig>> {
+        self.get_json("/apiConfig/getAll").await
     }
 
     pub async fn inspect_table_schema(

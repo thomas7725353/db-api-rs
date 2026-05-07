@@ -61,45 +61,74 @@ impl SqlTransformer {
         let mut transformed = String::with_capacity(sql.len());
         let mut params = Vec::new();
         let mut index = 0usize;
-        let mut chars = sql.chars().peekable();
-        let mut in_single_quote = false;
+        let bytes = sql.as_bytes();
+        let mut cursor = 0usize;
 
-        while let Some(ch) = chars.next() {
-            if ch == '\'' {
+        while cursor < bytes.len() {
+            if bytes[cursor] == b'\'' {
+                cursor = push_skipped(&mut transformed, sql, cursor, skip_single_quoted_string);
+                continue;
+            }
+            if bytes[cursor] == b'"' {
+                cursor = push_skipped(&mut transformed, sql, cursor, skip_double_quoted_identifier);
+                continue;
+            }
+            if bytes[cursor..].starts_with(b"--") {
+                cursor = push_skipped(&mut transformed, sql, cursor, skip_line_comment);
+                continue;
+            }
+            if bytes[cursor..].starts_with(b"/*") {
+                cursor = push_skipped(&mut transformed, sql, cursor, skip_block_comment);
+                continue;
+            }
+            if let Some(end) = skip_dollar_quoted_string(sql, cursor) {
+                transformed.push_str(&sql[cursor..end]);
+                cursor = end;
+                continue;
+            }
+            if bytes[cursor] != b'$' {
+                let ch = sql[cursor..].chars().next().unwrap();
                 transformed.push(ch);
-                in_single_quote = !in_single_quote;
+                cursor += ch.len_utf8();
                 continue;
             }
 
-            if !in_single_quote && ch == '$' {
-                let mut name = String::new();
-                while let Some(next) = chars.peek().copied() {
-                    if next.is_ascii_alphanumeric() || next == '_' {
-                        name.push(next);
-                        chars.next();
-                    } else {
-                        break;
-                    }
+            let start = cursor + 1;
+            if start < bytes.len() && bytes[start].is_ascii_digit() {
+                let mut end = start + 1;
+                while end < bytes.len() && bytes[end].is_ascii_digit() {
+                    end += 1;
                 }
-
-                if name.is_empty() {
-                    transformed.push(ch);
-                    continue;
+                if dialect_type == DialectType::PostgreSql
+                    && let Ok(position) = sql[start..end].parse::<usize>()
+                {
+                    index = index.max(position);
                 }
-
-                index += 1;
-                params.push(name);
-                match dialect_type {
-                    DialectType::MySql | DialectType::Sqlite => transformed.push('?'),
-                    DialectType::PostgreSql => {
-                        transformed.push('$');
-                        transformed.push_str(&index.to_string());
-                    }
-                }
+                transformed.push_str(&sql[cursor..end]);
+                cursor = end;
+                continue;
+            }
+            if start >= bytes.len() || !is_param_start(bytes[start]) {
+                transformed.push('$');
+                cursor += 1;
                 continue;
             }
 
-            transformed.push(ch);
+            let mut end = start + 1;
+            while end < bytes.len() && is_param_continue(bytes[end]) {
+                end += 1;
+            }
+
+            index += 1;
+            params.push(sql[start..end].to_string());
+            match dialect_type {
+                DialectType::MySql | DialectType::Sqlite => transformed.push('?'),
+                DialectType::PostgreSql => {
+                    transformed.push('$');
+                    transformed.push_str(&index.to_string());
+                }
+            }
+            cursor = end;
         }
 
         Ok((transformed, params))
@@ -523,6 +552,98 @@ impl SqlTransformer {
     }
 }
 
+fn push_skipped(
+    transformed: &mut String,
+    sql: &str,
+    start: usize,
+    skipper: fn(&[u8], usize) -> usize,
+) -> usize {
+    let end = skipper(sql.as_bytes(), start);
+    transformed.push_str(&sql[start..end]);
+    end
+}
+
+fn skip_single_quoted_string(bytes: &[u8], start: usize) -> usize {
+    let mut idx = start + 1;
+    while idx < bytes.len() {
+        if bytes[idx] == b'\'' {
+            if idx + 1 < bytes.len() && bytes[idx + 1] == b'\'' {
+                idx += 2;
+            } else {
+                return idx + 1;
+            }
+        } else {
+            idx += 1;
+        }
+    }
+    bytes.len()
+}
+
+fn skip_double_quoted_identifier(bytes: &[u8], start: usize) -> usize {
+    let mut idx = start + 1;
+    while idx < bytes.len() {
+        if bytes[idx] == b'"' {
+            if idx + 1 < bytes.len() && bytes[idx + 1] == b'"' {
+                idx += 2;
+            } else {
+                return idx + 1;
+            }
+        } else {
+            idx += 1;
+        }
+    }
+    bytes.len()
+}
+
+fn skip_line_comment(bytes: &[u8], start: usize) -> usize {
+    bytes[start..]
+        .iter()
+        .position(|ch| *ch == b'\n')
+        .map(|offset| start + offset + 1)
+        .unwrap_or(bytes.len())
+}
+
+fn skip_block_comment(bytes: &[u8], start: usize) -> usize {
+    bytes[start + 2..]
+        .windows(2)
+        .position(|window| window == b"*/")
+        .map(|offset| start + 2 + offset + 2)
+        .unwrap_or(bytes.len())
+}
+
+fn skip_dollar_quoted_string(sql: &str, start: usize) -> Option<usize> {
+    let bytes = sql.as_bytes();
+    if bytes.get(start) != Some(&b'$') {
+        return None;
+    }
+
+    let mut tag_end = start + 1;
+    while tag_end < bytes.len() && is_dollar_quote_tag(bytes[tag_end]) {
+        tag_end += 1;
+    }
+    if bytes.get(tag_end) != Some(&b'$') {
+        return None;
+    }
+
+    let delimiter = &sql[start..=tag_end];
+    let content_start = tag_end + 1;
+    sql[content_start..]
+        .find(delimiter)
+        .map(|offset| content_start + offset + delimiter.len())
+}
+
+fn is_dollar_quote_tag(ch: u8) -> bool {
+    ch.is_ascii_alphanumeric() || ch == b'_'
+}
+
+fn is_param_start(ch: u8) -> bool {
+    ch.is_ascii_alphabetic() || ch == b'_'
+}
+
+fn is_param_continue(ch: u8) -> bool {
+    ch.is_ascii_alphanumeric() || ch == b'_'
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -607,6 +728,44 @@ mod tests {
             );
             assert_eq!(params, expected_params, "wrong params for {}", sql);
         }
+    }
+
+    #[test]
+    fn test_named_params_skip_comments_and_quoted_regions() {
+        let sql = "-- $todo\nSELECT \"$quoted\" FROM users /* $block */ WHERE id = $id";
+        let (transformed, params) =
+            SqlTransformer::replace_named_params(sql, DialectType::PostgreSql).unwrap();
+
+        assert!(transformed.contains("-- $todo"));
+        assert!(transformed.contains("\"$quoted\""));
+        assert!(transformed.contains("/* $block */"));
+        assert!(transformed.contains("WHERE id = $1"));
+        assert_eq!(params, vec!["id".to_string()]);
+    }
+
+    #[test]
+    fn test_named_params_skip_single_and_dollar_quoted_strings() {
+        let sql = "SELECT '$literal', 'it''s $escaped', $$ $not_param $$, $tag$ $skip $tag$, $real";
+        let (transformed, params) =
+            SqlTransformer::replace_named_params(sql, DialectType::PostgreSql).unwrap();
+
+        assert!(transformed.contains("'$literal'"));
+        assert!(transformed.contains("'it''s $escaped'"));
+        assert!(transformed.contains("$$ $not_param $$"));
+        assert!(transformed.contains("$tag$ $skip $tag$"));
+        assert!(transformed.ends_with("$1"));
+        assert_eq!(params, vec!["real".to_string()]);
+    }
+
+    #[test]
+    fn test_named_params_preserve_positional_placeholders() {
+        let sql = "SELECT * FROM users WHERE id = $1 AND name = $name";
+        let (transformed, params) =
+            SqlTransformer::replace_named_params(sql, DialectType::PostgreSql).unwrap();
+
+        assert!(transformed.contains("id = $1"));
+        assert!(transformed.contains("name = $2"));
+        assert_eq!(params, vec!["name".to_string()]);
     }
 
     #[test]

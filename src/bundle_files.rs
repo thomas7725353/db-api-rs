@@ -38,10 +38,100 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
 
 pub async fn run_bundle_command(args: BundleArgs) -> anyhow::Result<()> {
     match args.command {
-        BundleCommand::DraftTable(_) => anyhow::bail!("draft-table is not implemented yet"),
-        BundleCommand::DraftSql(_) => anyhow::bail!("draft-sql is not implemented yet"),
-        BundleCommand::Validate(_) => anyhow::bail!("validate is not implemented yet"),
-        BundleCommand::Apply(_) => anyhow::bail!("apply is not implemented yet"),
+        BundleCommand::DraftTable(args) => {
+            let client = crate::dbapi_client::DbapiClient::new(args.base_url)?;
+            let schema = client
+                .inspect_table_schema(&args.datasource_id, &args.table)
+                .await
+                .with_context(|| {
+                    format!(
+                        "inspecting schema for table {} on datasource {}",
+                        args.table, args.datasource_id
+                    )
+                })?;
+            let bundle = crate::manifest_generator::draft_table_crud_bundle(
+                crate::manifest::DraftTableInput {
+                    datasource_id: args.datasource_id,
+                    table: args.table,
+                    primary_key: args.primary_key,
+                    resource_path: args.resource_path,
+                    group: crate::manifest::ManifestGroup {
+                        id: args.group_id,
+                        name: args.group_name,
+                    },
+                    public: true,
+                },
+                &schema,
+            )
+            .context("generating draft table CRUD bundle")?;
+            write_bundle(&args.out, &bundle)
+                .with_context(|| format!("writing bundle to {}", args.out.display()))?;
+            println!("bundle written to {}", args.out.display());
+            Ok(())
+        }
+        BundleCommand::DraftSql(args) => {
+            let bundle =
+                crate::manifest_generator::draft_sql_api_bundle(crate::manifest::DraftSqlInput {
+                    datasource_id: args.datasource_id,
+                    resource_path: args.resource_path,
+                    api_id: args.api_id,
+                    api_name: args.api_name,
+                    group: crate::manifest::ManifestGroup {
+                        id: args.group_id,
+                        name: args.group_name,
+                    },
+                    sql: args.sql,
+                    engine: args.engine,
+                })
+                .context("generating draft SQL API bundle")?;
+            write_bundle(&args.out, &bundle)
+                .with_context(|| format!("writing bundle to {}", args.out.display()))?;
+            println!("bundle written to {}", args.out.display());
+            Ok(())
+        }
+        BundleCommand::Validate(args) => {
+            let client = crate::dbapi_client::DbapiClient::new(args.base_url)?;
+            let groups = read_group_file(&args.dir)
+                .with_context(|| format!("reading group file from {}", args.dir.display()))?;
+            let api = read_api_file(&args.dir)
+                .with_context(|| format!("reading API file from {}", args.dir.display()))?;
+            let report = crate::manifest_validator::validate_against_server(&client, &groups, &api)
+                .await
+                .context("validating bundle against server")?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if report.success {
+                Ok(())
+            } else {
+                anyhow::bail!("bundle validation failed")
+            }
+        }
+        BundleCommand::Apply(args) => {
+            if !args.allow_write {
+                anyhow::bail!("apply requires --allow-write=true");
+            }
+            let client = crate::dbapi_client::DbapiClient::new(args.base_url)?;
+            let groups = read_group_file(&args.dir)
+                .with_context(|| format!("reading group file from {}", args.dir.display()))?;
+            let api = read_api_file(&args.dir)
+                .with_context(|| format!("reading API file from {}", args.dir.display()))?;
+            let report = crate::manifest_validator::validate_against_server(&client, &groups, &api)
+                .await
+                .context("validating bundle against server before apply")?;
+            if !report.success {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                anyhow::bail!("bundle validation failed");
+            }
+            client
+                .import_groups_file(&args.dir.join("api_group_config.json"))
+                .await
+                .with_context(|| format!("importing groups from {}", args.dir.display()))?;
+            client
+                .import_api_file(&args.dir.join("api_config.json"))
+                .await
+                .with_context(|| format!("importing API config from {}", args.dir.display()))?;
+            println!("bundle applied from {}", args.dir.display());
+            Ok(())
+        }
     }
 }
 

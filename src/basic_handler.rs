@@ -516,6 +516,7 @@ pub async fn access_search(
         input.get("appId").and_then(JsonValue::as_str),
         status,
         input.get("ip").and_then(JsonValue::as_str),
+        input.get("error").and_then(JsonValue::as_str),
     )
     .await
     {

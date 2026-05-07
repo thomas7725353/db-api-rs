@@ -1,15 +1,36 @@
-import { ReloadOutlined } from '@ant-design/icons';
-import { App, Button, Card, DatePicker, Empty, Space, Statistic, Table, Typography } from 'antd';
+import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import {
+  App,
+  Button,
+  Card,
+  DatePicker,
+  Empty,
+  Form,
+  Input,
+  InputNumber,
+  Space,
+  Statistic,
+  Table,
+  Typography,
+} from 'antd';
 import dayjs, { Dayjs } from 'dayjs';
 import { useEffect, useMemo, useState } from 'react';
 import { monitorService } from '../api/services';
 import type { AccessLog } from '../api/types';
 
 type MetricRow = Record<string, unknown>;
+type AccessLogFilters = {
+  url?: string;
+  status?: number | null;
+  ip?: string;
+  error?: string;
+};
 
 export default function MonitorPage() {
   const { message } = App.useApp();
+  const [filterForm] = Form.useForm<AccessLogFilters>();
   const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(7, 'day'), dayjs()]);
+  const [filters, setFilters] = useState<AccessLogFilters>({});
   const [logs, setLogs] = useState<AccessLog[]>([]);
   const [ratio, setRatio] = useState<MetricRow>({});
   const [trend, setTrend] = useState<MetricRow[]>([]);
@@ -18,28 +39,23 @@ export default function MonitorPage() {
   const [topIp, setTopIp] = useState<MetricRow[]>([]);
   const [topDuration, setTopDuration] = useState<MetricRow[]>([]);
 
-  const payload = useMemo(
-    () => ({
-      start: range[0].unix(),
-      end: range[1].add(1, 'day').unix(),
-    }),
-    [range],
-  );
+  const rangePayload = useMemo(() => buildAccessRangePayload(range), [range]);
 
   const successNum = numberOf(ratio, 'successNum');
   const failNum = numberOf(ratio, 'failNum');
   const totalNum = successNum + failNum;
 
-  async function load() {
+  async function load(nextFilters: AccessLogFilters = filters) {
+    const nextPayload = buildAccessLogSearchPayload(range, nextFilters);
     const [nextLogs, nextRatio, nextTrend, nextTopApi, nextTopApp, nextTopIp, nextTopDuration] =
       await Promise.all([
-        keepOnError(monitorService.search(payload), logs),
-        keepOnError(monitorService.successRatio(payload), ratio),
-        keepOnError(monitorService.countByDay(payload), trend),
-        keepOnError(monitorService.topApi(payload), topApi),
-        keepOnError(monitorService.topApp(payload), topApp),
-        keepOnError(monitorService.topIp(payload), topIp),
-        keepOnError(monitorService.topDuration(payload), topDuration),
+        keepOnError(monitorService.search(nextPayload), logs),
+        keepOnError(monitorService.successRatio(rangePayload), ratio),
+        keepOnError(monitorService.countByDay(rangePayload), trend),
+        keepOnError(monitorService.topApi(rangePayload), topApi),
+        keepOnError(monitorService.topApp(rangePayload), topApp),
+        keepOnError(monitorService.topIp(rangePayload), topIp),
+        keepOnError(monitorService.topDuration(rangePayload), topDuration),
       ]);
     setLogs(nextLogs);
     setRatio(nextRatio);
@@ -59,6 +75,18 @@ export default function MonitorPage() {
     }
   }
 
+  function searchLogs(values: AccessLogFilters) {
+    const nextFilters = normalizeAccessLogFilters(values);
+    setFilters(nextFilters);
+    void load(nextFilters);
+  }
+
+  function resetLogSearch() {
+    filterForm.resetFields();
+    setFilters({});
+    void load({});
+  }
+
   useEffect(() => {
     void load();
   }, []);
@@ -76,7 +104,7 @@ export default function MonitorPage() {
               if (next?.[0] && next[1]) setRange([next[0], next[1]]);
             }}
           />
-          <Button icon={<ReloadOutlined />} onClick={load}>
+          <Button icon={<ReloadOutlined />} onClick={() => void load()}>
             查询
           </Button>
         </Space>
@@ -106,9 +134,38 @@ export default function MonitorPage() {
         <TopBarChart title="平均耗时 Top" rows={topDuration} labelKey="url" valueKey="duration" suffix=" ms" />
       </div>
       <Card title="访问记录">
+        <Form<AccessLogFilters>
+          form={filterForm}
+          layout="inline"
+          onFinish={searchLogs}
+          className="access-log-search-form"
+        >
+          <Form.Item name="url" label="URL">
+            <Input allowClear placeholder="/api/pg/demo/items/get" />
+          </Form.Item>
+          <Form.Item name="status" label="状态码">
+            <InputNumber min={100} max={599} precision={0} controls={false} placeholder="200" />
+          </Form.Item>
+          <Form.Item name="ip" label="IP">
+            <Input allowClear placeholder="127.0.0.1" />
+          </Form.Item>
+          <Form.Item name="error" label="错误">
+            <Input allowClear placeholder="Method not allowed" />
+          </Form.Item>
+          <Form.Item>
+            <Space>
+              <Button type="primary" htmlType="submit" icon={<SearchOutlined />}>
+                搜索
+              </Button>
+              <Button onClick={resetLogSearch}>重置</Button>
+            </Space>
+          </Form.Item>
+        </Form>
         <Table<AccessLog>
+          className="mt-4"
           rowKey={(row, index) => row.id ?? `${row.url}-${index}`}
           dataSource={logs}
+          scroll={{ x: 920 }}
           columns={[
             { title: 'URL', dataIndex: 'url' },
             { title: '状态', dataIndex: 'status', width: 100 },
@@ -120,6 +177,35 @@ export default function MonitorPage() {
       </Card>
     </div>
   );
+}
+
+function buildAccessRangePayload(range: [Dayjs, Dayjs]): Record<string, unknown> {
+  return {
+    start: range[0].unix(),
+    end: range[1].add(1, 'day').unix(),
+  };
+}
+
+function buildAccessLogSearchPayload(
+  range: [Dayjs, Dayjs],
+  filters: AccessLogFilters,
+): Record<string, unknown> {
+  return {
+    ...buildAccessRangePayload(range),
+    ...filters,
+  };
+}
+
+function normalizeAccessLogFilters(values: AccessLogFilters): AccessLogFilters {
+  const next: AccessLogFilters = {};
+  const url = values.url?.trim();
+  const ip = values.ip?.trim();
+  const error = values.error?.trim();
+  if (url) next.url = url;
+  if (typeof values.status === 'number') next.status = values.status;
+  if (ip) next.ip = ip;
+  if (error) next.error = error;
+  return next;
 }
 
 function TrendChart({ rows }: { rows: MetricRow[] }) {

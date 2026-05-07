@@ -983,6 +983,7 @@ pub async fn access_search(
     app_id: Option<&str>,
     status: Option<i32>,
     ip: Option<&str>,
+    error: Option<&str>,
 ) -> anyhow::Result<Vec<AccessLog>> {
     let mut sql = "select id, url, status, duration, timestamp, ip, app_id, api_id, error from access_log where timestamp between ? and ?".to_string();
     let mut args = vec![v(start), v(end)];
@@ -1001,6 +1002,10 @@ pub async fn access_search(
     if let Some(app_id) = app_id.filter(|value| !value.is_empty()) {
         sql.push_str(" and app_id = ?");
         args.push(v(app_id));
+    }
+    if let Some(error) = error.filter(|value| !value.is_empty()) {
+        sql.push_str(" and error like ?");
+        args.push(v(format!("%{error}%")));
     }
     sql.push_str(" order by timestamp desc");
     db::query_as(db, &sql, args).await
@@ -1310,6 +1315,68 @@ mod tests {
 
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].id.as_deref(), Some("api-note"));
+    }
+
+    #[tokio::test]
+    async fn access_search_filters_url_status_ip_and_error_like() {
+        let db = init_repository("sqlite::memory:").await.unwrap();
+        for (id, url, status, ip, error) in [
+            (
+                "log-1",
+                "/api/pg/demo/items/delete",
+                405,
+                "127.0.0.1",
+                Some("Method not allowed"),
+            ),
+            (
+                "log-2",
+                "/api/pg/demo/items/delete",
+                405,
+                "127.0.0.1",
+                Some("Body parse failed"),
+            ),
+            ("log-3", "/api/pg/demo/items/delete", 200, "127.0.0.1", None),
+            (
+                "log-4",
+                "/api/pg/demo/items/qb-list",
+                405,
+                "10.0.0.2",
+                Some("Method not allowed"),
+            ),
+        ] {
+            insert_access_log(
+                &db,
+                &AccessLog {
+                    id: Some(id.to_string()),
+                    url: Some(url.to_string()),
+                    status: Some(status),
+                    duration: Some(12),
+                    timestamp: Some(100),
+                    ip: Some(ip.to_string()),
+                    app_id: None,
+                    api_id: None,
+                    error: error.map(str::to_string),
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let logs = access_search(
+            &db,
+            0,
+            200,
+            Some("/api/pg/demo/items/delete"),
+            None,
+            Some(405),
+            Some("127.0.0.1"),
+            Some("not allowed"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].id.as_deref(), Some("log-1"));
     }
 
     async fn create_api_config_test_tables(db: &DbConn) {

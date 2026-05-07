@@ -40,7 +40,6 @@ pub async fn list_tables(data_db: &DbConn) -> anyhow::Result<Vec<String>> {
 }
 
 pub async fn inspect_table(data_db: &DbConn, table: &str) -> anyhow::Result<TableSchema> {
-    validate_table_identifier(table)?;
     let columns = match data_db.backend {
         DbBackend::Sqlite => inspect_sqlite_table(data_db, table).await?,
         DbBackend::MySql => inspect_mysql_table(data_db, table).await?,
@@ -53,6 +52,7 @@ pub async fn inspect_table(data_db: &DbConn, table: &str) -> anyhow::Result<Tabl
 }
 
 async fn inspect_sqlite_table(data_db: &DbConn, table: &str) -> anyhow::Result<Vec<ColumnInfo>> {
+    validate_table_identifier(table)?;
     let sql = format!(
         "select name, type, \"notnull\" as not_null, dflt_value, pk from pragma_table_info(\"{}\")",
         escape_sqlite_identifier(table)
@@ -97,7 +97,7 @@ async fn inspect_mysql_table(data_db: &DbConn, table: &str) -> anyhow::Result<Ve
 async fn inspect_postgres_table(data_db: &DbConn, table: &str) -> anyhow::Result<Vec<ColumnInfo>> {
     let rows = db::query_json(
         data_db,
-        "select c.column_name as name, c.data_type as type, case when tc.constraint_type = 'PRIMARY KEY' then 'PRI' else '' end as column_key, c.is_nullable, c.column_default, c.is_identity from information_schema.columns c left join information_schema.key_column_usage k on c.table_schema = k.table_schema and c.table_name = k.table_name and c.column_name = k.column_name left join information_schema.table_constraints tc on k.constraint_schema = tc.constraint_schema and k.constraint_name = tc.constraint_name where c.table_schema = 'public' and c.table_name = $1 order by c.ordinal_position",
+        "select c.column_name as name, c.data_type as type, case when exists (select 1 from information_schema.key_column_usage k join information_schema.table_constraints tc on k.constraint_schema = tc.constraint_schema and k.constraint_name = tc.constraint_name and k.table_schema = tc.table_schema and k.table_name = tc.table_name where k.table_schema = c.table_schema and k.table_name = c.table_name and k.column_name = c.column_name and tc.constraint_type = 'PRIMARY KEY') then 'PRI' else '' end as column_key, c.is_nullable, c.column_default, c.is_identity from information_schema.columns c where c.table_schema = 'public' and c.table_name = $1 order by c.ordinal_position",
         vec![string_value(table)],
     )
     .await?;

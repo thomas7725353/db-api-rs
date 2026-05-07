@@ -7,6 +7,8 @@ description: Use when seeding or verifying the local Rust standalone db-api-rs D
 
 ## Purpose
 
+Use this skill only for the historical local demo CRUD seed. For new API creation, use `dbapi-generate-table-apis`, `dbapi-generate-sql-api`, and `dbapi-apply-api-bundle`.
+
 Use this skill to recreate the known-good demo API set for the Rust standalone db-api-rs runtime. The demo uses the repository root `data.db` as both metadata database and example business SQLite database. The seeded APIs are private (`previlege=0`), so curl verification must create an app, authorize it to `demo_crud_group`, generate a token, then pass `Authorization: $TOKEN`.
 
 ## Files

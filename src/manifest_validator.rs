@@ -1,6 +1,6 @@
 use crate::manifest::ValidationReport;
-use crate::model::{ApiConfigExport, ApiGroup};
-use std::collections::HashSet;
+use crate::model::{ApiConfigExport, ApiGroup, ApiSql};
+use std::collections::{HashMap, HashSet};
 
 pub fn validate_bundle_shape(groups: &[ApiGroup], bundle: &ApiConfigExport) -> ValidationReport {
     let mut report = ValidationReport::default();
@@ -28,6 +28,7 @@ pub fn validate_bundle_shape(groups: &[ApiGroup], bundle: &ApiConfigExport) -> V
         let path = trimmed(api.path.as_deref());
         let datasource_id = trimmed(api.datasource_id.as_deref());
         let method = trimmed(api.method.as_deref());
+        let group_id = trimmed(api.group_id.as_deref());
 
         if id.is_empty() {
             report.error(api_context("api id is required", id, path));
@@ -51,15 +52,46 @@ pub fn validate_bundle_shape(groups: &[ApiGroup], bundle: &ApiConfigExport) -> V
         }
         if method.is_empty() {
             report.error(api_context("api method is required", id, path));
+        } else if !is_supported_method(method) {
+            report.error(format!(
+                "{}: {method}",
+                api_context("api method is invalid", id, path)
+            ));
         }
 
-        for sql_row in &api.sql_list {
-            validate_sql_api_id(&mut report, sql_row.api_id.as_deref(), &api_ids);
+        if group_id.is_empty() {
+            report.error(api_context("api groupId is required", id, path));
+        } else if !group_ids.contains(group_id) {
+            report.error(format!(
+                "{}: {group_id}",
+                api_context("api groupId does not exist in bundle", id, path)
+            ));
+        }
+
+        if !api.sql_list.is_empty() {
+            report.error(api_context(
+                "api sqlList is not importable; use top-level bundle.sql rows",
+                id,
+                path,
+            ));
         }
     }
 
+    let mut sql_count_by_api_id = HashMap::new();
     for sql_row in &bundle.sql {
-        validate_sql_api_id(&mut report, sql_row.api_id.as_deref(), &api_ids);
+        validate_top_level_sql_row(&mut report, sql_row, &api_ids, &mut sql_count_by_api_id);
+    }
+
+    for api in &bundle.api {
+        let id = trimmed(api.id.as_deref());
+        if !id.is_empty() && !sql_count_by_api_id.contains_key(id) {
+            let path = trimmed(api.path.as_deref());
+            report.error(api_context(
+                "api requires at least one top-level sql row",
+                id,
+                path,
+            ));
+        }
     }
 
     report
@@ -94,17 +126,34 @@ pub async fn validate_against_server(
     Ok(report)
 }
 
-fn validate_sql_api_id(
+fn validate_top_level_sql_row(
     report: &mut ValidationReport,
-    api_id: Option<&str>,
+    sql_row: &ApiSql,
     api_ids: &HashSet<String>,
+    sql_count_by_api_id: &mut HashMap<String, usize>,
 ) {
-    let api_id = trimmed(api_id);
+    let api_id = trimmed(sql_row.api_id.as_deref());
     if api_id.is_empty() {
         report.error("sql apiId is required");
     } else if !api_ids.contains(api_id) {
         report.error(format!("sql references unknown api id: {api_id}"));
+    } else {
+        *sql_count_by_api_id.entry(api_id.to_string()).or_default() += 1;
     }
+
+    if trimmed(sql_row.sql_text.as_deref()).is_empty() {
+        report.error(format!("sqlText is required for api id: {api_id}"));
+    }
+    if trimmed(sql_row.transform_plugin.as_deref()).is_empty() {
+        report.error(format!("transformPlugin is required for api id: {api_id}"));
+    }
+}
+
+fn is_supported_method(method: &str) -> bool {
+    matches!(
+        method.to_ascii_uppercase().as_str(),
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+    )
 }
 
 fn trimmed(value: Option<&str>) -> &str {
@@ -129,10 +178,10 @@ mod tests {
     fn rejects_leading_slash_and_duplicate_paths() {
         let bundle = ApiConfigExport {
             api: vec![api("one", "/demo/items/get"), api("two", "/demo/items/get")],
-            sql: vec![],
+            sql: vec![sql("one"), sql("two")],
         };
 
-        let report = validate_bundle_shape(&[], &bundle);
+        let report = validate_bundle_shape(&groups(), &bundle);
 
         assert!(!report.success);
         assert!(
@@ -157,12 +206,12 @@ mod tests {
                 id: Some(1),
                 api_id: Some("missing".to_string()),
                 sql_text: Some("select 1".to_string()),
-                transform_plugin: None,
+                transform_plugin: Some("sql".to_string()),
                 transform_plugin_params: None,
             }],
         };
 
-        let report = validate_bundle_shape(&[], &bundle);
+        let report = validate_bundle_shape(&groups(), &bundle);
 
         assert!(!report.success);
         assert!(
@@ -170,6 +219,90 @@ mod tests {
                 .errors
                 .iter()
                 .any(|error| error.contains("sql references unknown api id: missing"))
+        );
+    }
+
+    #[test]
+    fn rejects_api_group_id_missing_from_bundle_groups() {
+        let mut api = api("known", "demo/items/get");
+        api.group_id = Some("missing_group".to_string());
+        let bundle = ApiConfigExport {
+            api: vec![api],
+            sql: vec![sql("known")],
+        };
+
+        let report = validate_bundle_shape(&groups(), &bundle);
+
+        assert!(!report.success);
+        assert!(report.errors.iter().any(|error| {
+            error.contains("api groupId does not exist in bundle")
+                && error.contains("known")
+                && error.contains("missing_group")
+        }));
+    }
+
+    #[test]
+    fn rejects_api_with_only_nested_sql_list() {
+        let mut api = api("nested", "demo/items/get");
+        api.sql_list = vec![sql("nested")];
+        let bundle = ApiConfigExport {
+            api: vec![api],
+            sql: vec![],
+        };
+
+        let report = validate_bundle_shape(&groups(), &bundle);
+
+        assert!(!report.success);
+        assert!(report.errors.iter().any(|error| {
+            error.contains("api sqlList is not importable") && error.contains("nested")
+        }));
+        assert!(report.errors.iter().any(|error| {
+            error.contains("api requires at least one top-level sql row")
+                && error.contains("nested")
+        }));
+    }
+
+    #[test]
+    fn rejects_top_level_sql_row_with_empty_sql_text() {
+        let bundle = ApiConfigExport {
+            api: vec![api("known", "demo/items/get")],
+            sql: vec![ApiSql {
+                id: Some(1),
+                api_id: Some("known".to_string()),
+                sql_text: Some("   ".to_string()),
+                transform_plugin: Some("sql".to_string()),
+                transform_plugin_params: None,
+            }],
+        };
+
+        let report = validate_bundle_shape(&groups(), &bundle);
+
+        assert!(!report.success);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("sqlText is required for api id: known"))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_method() {
+        let mut api = api("known", "demo/items/get");
+        api.method = Some("TRACE".to_string());
+        let bundle = ApiConfigExport {
+            api: vec![api],
+            sql: vec![sql("known")],
+        };
+
+        let report = validate_bundle_shape(&groups(), &bundle);
+
+        assert!(!report.success);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("api method is invalid") && error.contains("TRACE"))
         );
     }
 
@@ -195,6 +328,23 @@ mod tests {
             json_param: None,
             alarm_plugin: None,
             alarm_plugin_param: None,
+        }
+    }
+
+    fn groups() -> Vec<ApiGroup> {
+        vec![ApiGroup {
+            id: Some("group".to_string()),
+            name: Some("Group".to_string()),
+        }]
+    }
+
+    fn sql(api_id: &str) -> ApiSql {
+        ApiSql {
+            id: Some(1),
+            api_id: Some(api_id.to_string()),
+            sql_text: Some("select 1".to_string()),
+            transform_plugin: Some("sql".to_string()),
+            transform_plugin_params: None,
         }
     }
 }

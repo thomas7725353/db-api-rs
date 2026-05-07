@@ -156,7 +156,7 @@ seed_demo_api.sql       Demo API seed SQL
 data.db                 Local SQLite metadata and demo database
 Dockerfile              Container image build
 docker-compose.yml      Local container deployment
-docs/superpowers/       Planning documents used during development
+docs/index.md           GitHub Pages project usage documentation
 ```
 
 ## API Execution Notes

@@ -205,6 +205,7 @@ pub fn draft_table_crud_bundle(
 pub fn draft_sql_api_bundle(input: DraftSqlInput) -> anyhow::Result<GeneratedBundle> {
     let resource_path = normalize_resource_path(&input.resource_path)?;
     let method = infer_method_from_sql(&input.sql);
+    let engine = normalize_sql_engine(&input.engine)?;
     let params = extract_dollar_params(&input.sql)
         .into_iter()
         .map(|name| json!({"name": name, "type": "string"}))
@@ -225,7 +226,7 @@ pub fn draft_sql_api_bundle(input: DraftSqlInput) -> anyhow::Result<GeneratedBun
         id: None,
         api_id: Some(input.api_id),
         sql_text: Some(input.sql),
-        transform_plugin: Some(input.engine),
+        transform_plugin: Some(engine.to_string()),
         transform_plugin_params: Some(String::new()),
     };
 
@@ -361,7 +362,6 @@ fn push_view_sql_api(
         &format!("{} View SQL List", schema.table),
         "View/report/analysis API",
         vec![
-            json!({"name":"order_by","type":"string"}),
             json!({"name":"limit","type":"bigint"}),
             json!({"name":"offset","type":"bigint"}),
         ],
@@ -373,9 +373,10 @@ fn push_view_sql_api(
         id: None,
         api_id: Some(id.clone()),
         sql_text: Some(format!(
-            "select {} from {} a where 1 = 1 order by [[ order_by | ident ]] desc limit [[ limit | int(default=20,max=100) ]] offset [[ offset | int(default=0) ]]",
+            "select {} from {} a where 1 = 1 order by {} desc limit [[ limit | int(default=20,max=100) ]] offset [[ offset | int(default=0) ]]",
             select_list(schema),
-            schema.table
+            schema.table,
+            default_order_column(schema)
         )),
         transform_plugin: Some("viewSql".to_string()),
         transform_plugin_params: Some("resultType=page".to_string()),
@@ -436,14 +437,7 @@ fn normalize_resource_path(path: &str) -> anyhow::Result<String> {
 }
 
 fn infer_method_from_sql(sql: &str) -> &'static str {
-    match sql
-        .trim_start()
-        .split(|ch: char| ch.is_whitespace() || ch == '(')
-        .find(|part| !part.is_empty())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
+    match first_sql_keyword(sql).to_ascii_lowercase().as_str() {
         "select" | "with" | "show" => "GET",
         "insert" => "POST",
         "update" => "PATCH",
@@ -452,51 +446,174 @@ fn infer_method_from_sql(sql: &str) -> &'static str {
     }
 }
 
+fn first_sql_keyword(sql: &str) -> &str {
+    let bytes = sql.as_bytes();
+    let mut idx = 0;
+
+    while idx < bytes.len() {
+        if bytes[idx].is_ascii_whitespace() || bytes[idx] == b'(' {
+            idx += 1;
+            continue;
+        }
+        if bytes[idx..].starts_with(b"--") {
+            idx = skip_line_comment(bytes, idx);
+            continue;
+        }
+        if bytes[idx..].starts_with(b"/*") {
+            idx = skip_block_comment(bytes, idx);
+            continue;
+        }
+
+        let start = idx;
+        while idx < bytes.len() && (bytes[idx].is_ascii_alphabetic() || bytes[idx] == b'_') {
+            idx += 1;
+        }
+        return &sql[start..idx];
+    }
+
+    ""
+}
+
 fn extract_dollar_params(sql: &str) -> Vec<String> {
     let mut params = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let mut chars = sql.char_indices().peekable();
-    let mut in_single_quote = false;
+    let bytes = sql.as_bytes();
+    let mut idx = 0;
 
-    while let Some((_, ch)) = chars.next() {
-        if ch == '\'' {
-            if in_single_quote && chars.peek().is_some_and(|(_, next)| *next == '\'') {
-                chars.next();
-            } else {
-                in_single_quote = !in_single_quote;
-            }
+    while idx < bytes.len() {
+        if bytes[idx] == b'\'' {
+            idx = skip_single_quoted_string(bytes, idx);
             continue;
         }
-
-        if in_single_quote || ch != '$' {
+        if bytes[idx] == b'"' {
+            idx = skip_double_quoted_identifier(bytes, idx);
             continue;
         }
-
-        let Some((start, first)) = chars.peek().copied() else {
+        if bytes[idx..].starts_with(b"--") {
+            idx = skip_line_comment(bytes, idx);
+            continue;
+        }
+        if bytes[idx..].starts_with(b"/*") {
+            idx = skip_block_comment(bytes, idx);
+            continue;
+        }
+        if let Some(end) = skip_dollar_quoted_string(sql, idx) {
+            idx = end;
+            continue;
+        }
+        if bytes[idx] != b'$' {
+            idx += 1;
             continue;
         };
-        if !(first.is_ascii_alphabetic() || first == '_') {
+
+        let start = idx + 1;
+        if start >= bytes.len() || !is_param_start(bytes[start]) {
+            idx += 1;
             continue;
         }
 
-        let mut end = start + first.len_utf8();
-        chars.next();
-        while let Some((idx, next)) = chars.peek().copied() {
-            if next.is_ascii_alphanumeric() || next == '_' {
-                end = idx + next.len_utf8();
-                chars.next();
-            } else {
-                break;
-            }
+        let mut end = start + 1;
+        while end < bytes.len() && is_param_continue(bytes[end]) {
+            end += 1;
         }
 
         let param = sql[start..end].to_string();
         if seen.insert(param.clone()) {
             params.push(param);
         }
+        idx = end;
     }
 
     params
+}
+
+fn normalize_sql_engine(engine: &str) -> anyhow::Result<&'static str> {
+    match engine.trim() {
+        "sql" => Ok("sql"),
+        "viewSql" => Ok("viewSql"),
+        other => Err(anyhow!("unsupported engine: {other}")),
+    }
+}
+
+fn skip_single_quoted_string(bytes: &[u8], start: usize) -> usize {
+    let mut idx = start + 1;
+    while idx < bytes.len() {
+        if bytes[idx] == b'\'' {
+            if idx + 1 < bytes.len() && bytes[idx + 1] == b'\'' {
+                idx += 2;
+            } else {
+                return idx + 1;
+            }
+        } else {
+            idx += 1;
+        }
+    }
+    bytes.len()
+}
+
+fn skip_double_quoted_identifier(bytes: &[u8], start: usize) -> usize {
+    let mut idx = start + 1;
+    while idx < bytes.len() {
+        if bytes[idx] == b'"' {
+            if idx + 1 < bytes.len() && bytes[idx + 1] == b'"' {
+                idx += 2;
+            } else {
+                return idx + 1;
+            }
+        } else {
+            idx += 1;
+        }
+    }
+    bytes.len()
+}
+
+fn skip_line_comment(bytes: &[u8], start: usize) -> usize {
+    bytes[start..]
+        .iter()
+        .position(|ch| *ch == b'\n')
+        .map(|offset| start + offset + 1)
+        .unwrap_or(bytes.len())
+}
+
+fn skip_block_comment(bytes: &[u8], start: usize) -> usize {
+    bytes[start + 2..]
+        .windows(2)
+        .position(|window| window == b"*/")
+        .map(|offset| start + 2 + offset + 2)
+        .unwrap_or(bytes.len())
+}
+
+fn skip_dollar_quoted_string(sql: &str, start: usize) -> Option<usize> {
+    let bytes = sql.as_bytes();
+    if bytes.get(start) != Some(&b'$') {
+        return None;
+    }
+
+    let mut tag_end = start + 1;
+    while tag_end < bytes.len() && is_dollar_quote_tag(bytes[tag_end]) {
+        tag_end += 1;
+    }
+    if bytes.get(tag_end) != Some(&b'$') {
+        return None;
+    }
+
+    let delimiter = &sql[start..=tag_end];
+    let content_start = tag_end + 1;
+    sql[content_start..]
+        .find(delimiter)
+        .map(|offset| content_start + offset + delimiter.len())
+}
+
+fn is_dollar_quote_tag(ch: u8) -> bool {
+    ch.is_ascii_alphanumeric() || ch == b'_'
+}
+
+fn is_param_start(ch: u8) -> bool {
+    ch.is_ascii_alphabetic() || ch == b'_'
+}
+
+fn is_param_continue(ch: u8) -> bool {
+    ch.is_ascii_alphanumeric() || ch == b'_'
 }
 
 fn validate_identifier(kind: &str, value: &str) -> anyhow::Result<()> {
@@ -584,6 +701,16 @@ fn default_order(schema: &TableSchema) -> Vec<serde_json::Value> {
         .find(|column| column.primary_key)
         .map(|column| vec![json!({"field": column.name, "direction": "desc"})])
         .unwrap_or_default()
+}
+
+fn default_order_column(schema: &TableSchema) -> &str {
+    schema
+        .columns
+        .iter()
+        .find(|column| column.primary_key)
+        .or_else(|| schema.columns.first())
+        .map(|column| column.name.as_str())
+        .unwrap_or("id")
 }
 
 fn select_list(schema: &TableSchema) -> String {
@@ -697,6 +824,15 @@ mod tests {
             .unwrap();
         assert!(view_sql.contains("select id, name"));
         assert!(!view_sql.contains("columns | ident_list"));
+        assert!(!view_sql.contains("order_by | ident"));
+        assert!(view_sql.contains("order by id desc"));
+        assert!(
+            !bundle.api_config.api[6]
+                .params
+                .as_deref()
+                .unwrap()
+                .contains("order_by")
+        );
         assert!(bundle.curl_md.contains("/api/demo/items/qb-list"));
         assert!(bundle.verify_md.contains("Validate generated API bundle"));
     }
@@ -733,6 +869,57 @@ mod tests {
                 .unwrap()
                 .contains("status")
         );
+    }
+
+    #[test]
+    fn sql_param_extraction_ignores_comments_and_quoted_literals() {
+        assert_eq!(
+            extract_dollar_params("-- $todo\nselect * from t where id = $id"),
+            vec!["id"]
+        );
+        assert_eq!(
+            extract_dollar_params("select $$ $not_param $$, $real"),
+            vec!["real"]
+        );
+        assert_eq!(
+            extract_dollar_params(
+                "select '$string_param', \"some_$identifier\", /* $block */ $real"
+            ),
+            vec!["real"]
+        );
+        assert_eq!(
+            extract_dollar_params("select $tag$ $not_param $tag$, $real, $real"),
+            vec!["real"]
+        );
+    }
+
+    #[test]
+    fn sql_method_inference_skips_leading_comments() {
+        assert_eq!(infer_method_from_sql("-- report\nselect * from t"), "GET");
+        assert_eq!(
+            infer_method_from_sql("/* report */ update t set name = $name"),
+            "PATCH"
+        );
+    }
+
+    #[test]
+    fn sql_bundle_rejects_unsupported_engine() {
+        let error = draft_sql_api_bundle(DraftSqlInput {
+            datasource_id: "postgres_demo".to_string(),
+            resource_path: "demo/items/custom-search".to_string(),
+            api_id: "demo_items_custom_search".to_string(),
+            api_name: "Demo Items Custom Search".to_string(),
+            group: ManifestGroup {
+                id: "demo_items_group".to_string(),
+                name: "Demo Items".to_string(),
+            },
+            sql: "select id from demo_items".to_string(),
+            engine: "view_sql".to_string(),
+        })
+        .unwrap_err()
+        .to_string();
+
+        assert_eq!(error, "unsupported engine: view_sql");
     }
 
     #[test]

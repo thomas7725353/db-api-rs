@@ -35,12 +35,13 @@ rtk cargo run -- bundle draft-table \
   --base-url http://127.0.0.1:8520 \
   --datasource-id "$DATASOURCE_ID" \
   --table "$TABLE" \
-  --primary-key "$PRIMARY_KEY" \
   --resource-path "$RESOURCE_PATH" \
   --group-id "$GROUP_ID" \
   --group-name "$GROUP_NAME" \
   --out "target/dbapi-bundles/$GROUP_ID"
 ```
+
+Add `--primary-key "$PRIMARY_KEY"` only when table metadata has no primary key or the intended key must be overridden.
 
 The bundle directory contains `dbapi_manifest.json`, `api_group_config.json`, `api_config.json`, `curl.md`, and `VERIFY.md`.
 

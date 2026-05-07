@@ -18,6 +18,11 @@ pub fn draft_table_crud_bundle(
         ));
     }
 
+    validate_identifier("table", &schema.table)?;
+    for column in &schema.columns {
+        validate_identifier("column", &column.name)?;
+    }
+
     let resource_path = normalize_resource_path(&input.resource_path)?;
     let primary_key = input.primary_key.clone().or_else(|| {
         schema
@@ -31,6 +36,7 @@ pub fn draft_table_crud_bundle(
             "primary_key is required when table metadata has no primary key"
         ));
     };
+    validate_identifier("primary_key", &primary_key)?;
     if !schema
         .columns
         .iter()
@@ -48,6 +54,9 @@ pub fn draft_table_crud_bundle(
         .filter(|column| column.name != primary_key && !column.generated)
         .cloned()
         .collect::<Vec<_>>();
+    if writable_columns.is_empty() {
+        return Err(anyhow!("table has no writable columns: {}", schema.table));
+    }
     let selected_columns = schema
         .columns
         .iter()
@@ -297,7 +306,6 @@ fn push_view_sql_api(
         &format!("{} View SQL List", schema.table),
         "View/report/analysis API",
         vec![
-            json!({"name":"columns","type":"Array<string>"}),
             json!({"name":"order_by","type":"string"}),
             json!({"name":"limit","type":"bigint"}),
             json!({"name":"offset","type":"bigint"}),
@@ -310,7 +318,8 @@ fn push_view_sql_api(
         id: None,
         api_id: Some(id.clone()),
         sql_text: Some(format!(
-            "select [[ columns | ident_list ]] from {} a where 1 = 1 order by [[ order_by | ident ]] desc limit [[ limit | int(default=20,max=100) ]] offset [[ offset | int(default=0) ]]",
+            "select {} from {} a where 1 = 1 order by [[ order_by | ident ]] desc limit [[ limit | int(default=20,max=100) ]] offset [[ offset | int(default=0) ]]",
+            select_list(schema),
             schema.table
         )),
         transform_plugin: Some("viewSql".to_string()),
@@ -369,6 +378,20 @@ fn normalize_resource_path(path: &str) -> anyhow::Result<String> {
         return Err(anyhow!("resource_path is required"));
     }
     Ok(trimmed.to_string())
+}
+
+fn validate_identifier(kind: &str, value: &str) -> anyhow::Result<()> {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return Err(anyhow!("{kind} identifier is required"));
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(anyhow!("invalid {kind} identifier: {value}"));
+    }
+    if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return Err(anyhow!("invalid {kind} identifier: {value}"));
+    }
+    Ok(())
 }
 
 fn slug_id(resource_path: &str) -> String {
@@ -442,6 +465,15 @@ fn default_order(schema: &TableSchema) -> Vec<serde_json::Value> {
         .find(|column| column.primary_key)
         .map(|column| vec![json!({"field": column.name, "direction": "desc"})])
         .unwrap_or_default()
+}
+
+fn select_list(schema: &TableSchema) -> String {
+    schema
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn generate_curl_md(resource_path: &str) -> String {
@@ -531,8 +563,60 @@ mod tests {
                 .iter()
                 .any(|row| row.transform_plugin.as_deref() == Some("viewSqlCount"))
         );
+        let view_sql = bundle
+            .api_config
+            .sql
+            .iter()
+            .find(|row| row.transform_plugin.as_deref() == Some("viewSql"))
+            .and_then(|row| row.sql_text.as_deref())
+            .unwrap();
+        assert!(view_sql.contains("select id, name"));
+        assert!(!view_sql.contains("columns | ident_list"));
         assert!(bundle.curl_md.contains("/api/demo/items/qb-list"));
         assert!(bundle.verify_md.contains("Validate generated API bundle"));
+    }
+
+    #[test]
+    fn table_bundle_rejects_tables_with_no_writable_columns() {
+        let schema = TableSchema {
+            table: "generated_only".to_string(),
+            columns: vec![col("id", "integer", true, true)],
+        };
+        let error = draft_table_crud_bundle(table_input("generated_only"), &schema)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("no writable columns"));
+    }
+
+    #[test]
+    fn table_bundle_rejects_unsafe_identifiers_before_generating_sql() {
+        let schema = TableSchema {
+            table: "demo_items".to_string(),
+            columns: vec![
+                col("id", "integer", true, true),
+                col("bad-name", "text", false, false),
+            ],
+        };
+        let error = draft_table_crud_bundle(table_input("demo_items"), &schema)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("invalid column identifier"));
+    }
+
+    fn table_input(table: &str) -> DraftTableInput {
+        DraftTableInput {
+            datasource_id: "postgres_demo".to_string(),
+            table: table.to_string(),
+            primary_key: Some("id".to_string()),
+            resource_path: "demo/items".to_string(),
+            group: ManifestGroup {
+                id: "demo_items_group".to_string(),
+                name: "Demo Items".to_string(),
+            },
+            public: true,
+        }
     }
 
     fn col(name: &str, ty: &str, primary_key: bool, generated: bool) -> ColumnInfo {

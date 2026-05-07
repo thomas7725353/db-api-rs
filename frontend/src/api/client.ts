@@ -1,3 +1,5 @@
+import { readAuthToken } from '../auth/session';
+
 export interface ApiEnvelope<T> {
   success?: boolean;
   msg?: string;
@@ -27,7 +29,7 @@ export async function apiGet<T>(path: string): Promise<T> {
 }
 
 export async function apiDownload(path: string, init: RequestInit = {}): Promise<Blob> {
-  const response = await fetch(path, init);
+  const response = await fetch(path, withAuthHeader(init));
   const contentType = response.headers.get('content-type') ?? '';
   const shouldInspectJson = contentType.includes('application/json');
   if (!response.ok) {
@@ -56,7 +58,7 @@ export async function apiUpload<T>(path: string, file: File): Promise<T> {
 }
 
 export async function apiRequest<T>(path: string, init: RequestInit): Promise<T> {
-  const response = await fetch(path, init);
+  const response = await fetch(path, withAuthHeader(init));
   const text = await response.text();
   const payload = parsePayload(text);
 
@@ -73,6 +75,17 @@ export async function apiRequest<T>(path: string, init: RequestInit): Promise<T>
   }
 
   return payload as T;
+}
+
+export function withAuthHeader(init: RequestInit = {}): RequestInit {
+  const token = readAuthToken();
+  if (!token) return init;
+
+  const headers = new Headers(init.headers);
+  if (!headers.has('Authorization')) {
+    headers.set('Authorization', token);
+  }
+  return { ...init, headers };
 }
 
 function parsePayload(text: string): unknown {

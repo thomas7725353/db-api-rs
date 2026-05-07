@@ -13,6 +13,34 @@ body {
   background: #f5f7fb;
 }
 
+.login-page {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background: #f5f7fb;
+}
+
+.login-card {
+  width: min(100%, 380px);
+  border: 1px solid #e6ebf2;
+  box-shadow: 0 12px 36px rgb(18 38 63 / 10%);
+}
+
+.login-heading {
+  margin-bottom: 28px;
+  text-align: center;
+}
+
+.login-title.ant-typography {
+  margin-bottom: 6px;
+  color: #20352b;
+}
+
+.login-subtitle {
+  color: #6f8278;
+}
+
 .app-header {
   position: sticky;
   top: 0;

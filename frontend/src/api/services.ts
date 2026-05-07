@@ -8,6 +8,10 @@ export const systemService = {
   ip: () => apiPost<string>('/system/getIP'),
 };
 
+export const authService = {
+  login: (username: string, password: string) => apiPost<string>('/user/login', { username, password }),
+};
+
 export const datasourceService = {
   list: () => apiPost<DataSource[]>('/datasource/getAll'),
   detail: (id: string) => apiPost<DataSource | null>(`/datasource/detail/${id}`),

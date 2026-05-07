@@ -9,6 +9,7 @@ import { Button, Layout, Menu, Tag, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { systemService } from '../api/services';
+import { clearAuthSession } from '../auth/session';
 
 const { Header, Content } = Layout;
 
@@ -33,9 +34,8 @@ export default function AppLayout() {
   }, [location.pathname]);
 
   function logout() {
-    localStorage.removeItem('token');
-    sessionStorage.clear();
-    navigate('/apis');
+    clearAuthSession();
+    navigate('/login', { replace: true });
   }
 
   return (

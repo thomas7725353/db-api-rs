@@ -16,6 +16,24 @@ services:
       timeout: 3s
       retries: 20
 
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_DATABASE: dbapi_demo
+      MYSQL_USER: dbapi
+      MYSQL_PASSWORD: dbapi_pass
+      MYSQL_ROOT_PASSWORD: dbapi_root_pass
+    ports:
+      - "127.0.0.1:13306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -udbapi -pdbapi_pass --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
   db-api-rs:
     image: db-api-rs:local
     build:
@@ -30,6 +48,8 @@ services:
       - ./data.db:/data/data.db
     depends_on:
       postgres:
+        condition: service_healthy
+      mysql:
         condition: service_healthy
 
   dbapi-mcp:
@@ -53,3 +73,4 @@ services:
 
 volumes:
   pg-data:
+  mysql-data:

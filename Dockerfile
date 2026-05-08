@@ -11,6 +11,7 @@ FROM rust:1-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY --from=frontend /app/static ./static
 RUN cargo build --release
 
 FROM debian:bookworm-slim
@@ -21,7 +22,6 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY --from=builder /app/target/release/db-api-rs /app/db-api-rs
-COPY --from=frontend /app/static /app/static
 
 ENV RUST_LOG=info
 ENV DB_API_METADATA_URL=sqlite:///data/data.db

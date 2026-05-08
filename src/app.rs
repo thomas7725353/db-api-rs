@@ -5,13 +5,16 @@ use crate::{
 };
 use axum::{
     Router,
+    extract::Path,
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
+use include_dir::{Dir, include_dir};
 use std::sync::Arc;
-use tower_http::services::ServeDir;
 use tracing::info;
+
+static STATIC_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/static");
 
 pub async fn serve_http() -> anyhow::Result<()> {
     let metadata_url =
@@ -130,19 +133,41 @@ pub fn router(state: Arc<handler::AppState>) -> Router {
             "/table/getAllColumns",
             post(basic_handler::table_get_all_columns),
         )
-        .nest_service("/assets", ServeDir::new("static/assets"))
+        .route("/assets/{*path}", get(static_asset))
         .fallback(spa_index)
         .with_state(state)
 }
 
 async fn spa_index() -> Response {
-    match tokio::fs::read_to_string("static/index.html").await {
-        Ok(html) => index_response(html),
-        Err(error) => (
+    match STATIC_DIR.get_file("index.html") {
+        Some(file) => index_response(file.contents_utf8().unwrap_or_default().to_string()),
+        None => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to read static/index.html: {error}"),
+            "embedded static/index.html is missing".to_string(),
         )
             .into_response(),
+    }
+}
+
+async fn static_asset(Path(path): Path<String>) -> Response {
+    match STATIC_DIR.get_file(format!("assets/{path}")) {
+        Some(file) => {
+            let content_type = mime_guess::from_path(path)
+                .first_or_octet_stream()
+                .to_string();
+            (
+                [
+                    (header::CONTENT_TYPE, content_type),
+                    (
+                        header::CACHE_CONTROL,
+                        "public, max-age=31536000, immutable".to_string(),
+                    ),
+                ],
+                file.contents().to_vec(),
+            )
+                .into_response()
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
@@ -173,5 +198,16 @@ mod tests {
             "no-store, no-cache, must-revalidate"
         );
         assert_eq!(response.headers().get(header::PRAGMA).unwrap(), "no-cache");
+    }
+
+    #[tokio::test]
+    async fn embedded_index_is_served() {
+        let response = spa_index().await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
     }
 }

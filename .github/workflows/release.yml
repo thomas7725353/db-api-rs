@@ -1,0 +1,147 @@
+name: Release Binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Build Linux ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: target
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            arch: amd64
+          - target: aarch64-unknown-linux-musl
+            arch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend assets
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cross
+        run: cargo install cross --locked
+
+      - name: Build backend with embedded frontend
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Prepare release asset
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/db-api-rs dist/db-api-rs-linux-${{ matrix.arch }}
+          chmod +x dist/db-api-rs-linux-${{ matrix.arch }}
+
+      - name: Verify embedded frontend assets
+        run: |
+          strings dist/db-api-rs-linux-${{ matrix.arch }} | grep -qi "<!doctype html>"
+          strings dist/db-api-rs-linux-${{ matrix.arch }} | grep -q "/assets/index-"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-api-rs-linux-${{ matrix.arch }}
+          path: dist/db-api-rs-linux-${{ matrix.arch }}
+          if-no-files-found: error
+
+  build-macos-arm64:
+    name: Build macOS arm64
+    runs-on: macos-latest
+    env:
+      CARGO_TARGET_DIR: target
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend assets
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Build backend with embedded frontend
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Prepare release asset
+        run: |
+          mkdir -p dist
+          cp target/aarch64-apple-darwin/release/db-api-rs dist/db-api-rs-darwin-arm64
+          chmod +x dist/db-api-rs-darwin-arm64
+
+      - name: Verify embedded frontend assets
+        run: |
+          strings dist/db-api-rs-darwin-arm64 | grep -qi "<!doctype html>"
+          strings dist/db-api-rs-darwin-arm64 | grep -q "/assets/index-"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-api-rs-darwin-arm64
+          path: dist/db-api-rs-darwin-arm64
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - build-linux
+      - build-macos-arm64
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: db-api-rs-*
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/db-api-rs-linux-amd64
+            release-assets/db-api-rs-linux-arm64
+            release-assets/db-api-rs-darwin-arm64
+          generate_release_notes: true
+          body: |
+            db-api-rs binaries with embedded frontend static assets.
+            - db-api-rs-linux-amd64
+            - db-api-rs-linux-arm64
+            - db-api-rs-darwin-arm64

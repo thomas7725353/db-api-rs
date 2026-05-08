@@ -1,3 +1,4 @@
+use crate::db;
 use crate::form::parse_request_body;
 use crate::handler::AppState;
 use crate::model::DataSource;
@@ -96,14 +97,22 @@ pub async fn delete(
     }
 }
 
-pub async fn connect(request: Request<Body>) -> impl IntoResponse {
+pub async fn connect(
+    State(state): State<Arc<AppState>>,
+    request: Request<Body>,
+) -> impl IntoResponse {
     let input = match parse_request_body(request).await {
         Ok(input) => input,
         Err(e) => return dto_fail(e.to_string()).into_response(),
     };
     let ds = datasource_from_input(input);
     match normalize_type(ds.db_type.as_deref()).as_str() {
-        "mysql" | "postgres" | "sqlite" => dto_ok::<JsonValue>("连接成功", None).into_response(),
+        "mysql" | "postgres" | "sqlite" => {
+            match db::test_data_source(&ds, state.pool_manager.sqlite_base_dir()).await {
+                Ok(()) => dto_ok::<JsonValue>("连接成功", None).into_response(),
+                Err(e) => dto_fail(format!("连接失败: {}", e)).into_response(),
+            }
+        }
         "hive" | "sqlserver" | "oracle" | "elasticsearch" => {
             dto_fail("Rust 单机版暂不支持该数据源类型").into_response()
         }

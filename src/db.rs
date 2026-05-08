@@ -52,10 +52,22 @@ impl DbPoolManager {
     pub fn remove(&self, id: &str) {
         self.pools.remove(id);
     }
+
+    pub fn sqlite_base_dir(&self) -> Option<&Path> {
+        self.sqlite_base_dir.as_deref()
+    }
 }
 
 pub async fn connect_metadata(url: &str) -> Result<DbConn> {
     connect_url(url).await
+}
+
+pub async fn test_data_source(ds: &DataSource, sqlite_base_dir: Option<&Path>) -> Result<()> {
+    let db = connect_data_source_with_base(ds, sqlite_base_dir).await?;
+    db.conn
+        .query_one(db.statement("select 1 as ok", vec![]))
+        .await?;
+    Ok(())
 }
 
 async fn connect_data_source_with_base(
@@ -336,5 +348,39 @@ mod tests {
             .unwrap(),
             "postgres://u:p@127.0.0.1/db"
         );
+    }
+
+    #[test]
+    fn normalizes_mysql_aliases_and_native_urls() {
+        assert_eq!(
+            normalize_url_with_base(
+                "mysql",
+                "mysql://dbapi:dbapi_pass@127.0.0.1:3306/dbapi_demo",
+                None,
+                None,
+                None,
+            )
+            .unwrap(),
+            "mysql://dbapi:dbapi_pass@127.0.0.1:3306/dbapi_demo"
+        );
+        assert_eq!(
+            normalize_url_with_base(
+                "mysql",
+                "jdbc:mysql://127.0.0.1:3306/dbapi_demo",
+                Some("dbapi"),
+                Some("dbapi_pass"),
+                None,
+            )
+            .unwrap(),
+            "mysql://dbapi:dbapi_pass@127.0.0.1:3306/dbapi_demo"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_datasource_type_for_normalization() {
+        let error = normalize_url_with_base("oracle", "127.0.0.1/db", None, None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Unsupported database type: oracle"));
     }
 }

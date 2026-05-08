@@ -231,4 +231,23 @@ mod tests {
     fn escapes_sqlite_identifier_quotes_defensively() {
         assert_eq!(escape_sqlite_identifier("a\"b"), "a\"\"b");
     }
+
+    #[test]
+    fn mysql_column_maps_primary_key_nullable_default_and_auto_increment() {
+        let column = mysql_column(serde_json::json!({
+            "name": "id",
+            "type": "bigint",
+            "column_key": "PRI",
+            "is_nullable": "NO",
+            "column_default": null,
+            "extra": "auto_increment"
+        }))
+        .unwrap();
+
+        assert_eq!(column.name, "id");
+        assert_eq!(column.column_type, "bigint");
+        assert!(column.primary_key);
+        assert_eq!(column.nullable, Some(false));
+        assert!(column.generated);
+    }
 }

@@ -706,6 +706,48 @@ mod tests {
     }
 
     #[test]
+    fn mysql_preview_uses_mysql_quoting_and_placeholders() {
+        let dsl = QueryBuilderDsl {
+            r#type: "queryBuilder".to_string(),
+            table: "demo_items".to_string(),
+            select: vec!["id".to_string(), "name".to_string()],
+            rules: RuleGroup {
+                combinator: "and".to_string(),
+                rules: vec![RuleNode::Rule(Rule {
+                    field: "status".to_string(),
+                    operator: "=".to_string(),
+                    value_source: Some("param".to_string()),
+                    value: json!({"param": "status"}),
+                    default_value: None,
+                    skip_when: vec![],
+                })],
+            },
+            order_by: vec![OrderBy {
+                field: "id".to_string(),
+                direction: "desc".to_string(),
+            }],
+            limit: Some(PageSpec {
+                param: None,
+                default: Some(20),
+                max: Some(100),
+            }),
+            offset: Some(PageSpec {
+                param: None,
+                default: Some(0),
+                max: None,
+            }),
+            count: true,
+        };
+
+        let preview = parse_preview(&dsl, &json!({"status": "active"}), DbBackend::MySql).unwrap();
+
+        assert!(preview.sql.contains("`demo_items`"));
+        assert!(preview.sql.contains("WHERE `status` = ?"));
+        assert!(preview.sql.contains("LIMIT ? OFFSET ?"));
+        assert!(preview.count_sql.unwrap().contains("COUNT(*) AS `total`"));
+    }
+
+    #[test]
     fn distinguishes_zero_false_and_empty_string() {
         let dsl: QueryBuilderDsl = serde_json::from_value(json!({
             "table": "demo_item",

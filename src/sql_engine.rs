@@ -138,7 +138,6 @@ impl SqlTransformer {
         }
         Ok(values)
     }
-
 }
 
 fn push_skipped(

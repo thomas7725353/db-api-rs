@@ -59,7 +59,9 @@ impl DbPoolManager {
 }
 
 pub async fn connect_metadata(url: &str) -> Result<DbConn> {
-    connect_url(url).await
+    let url = normalize_metadata_url(url)?;
+    ensure_sqlite_parent_dir(&url)?;
+    connect_url(&url).await
 }
 
 pub async fn test_data_source(ds: &DataSource, sqlite_base_dir: Option<&Path>) -> Result<()> {
@@ -114,6 +116,31 @@ fn normalize_url_with_base(
         "postgres" => normalize_server_url("postgres", raw, username, password),
         other => Err(anyhow!("Unsupported database type: {}", other)),
     }
+}
+
+fn normalize_metadata_url(url: &str) -> Result<String> {
+    let raw = url.trim();
+    if raw.is_empty() {
+        return Err(anyhow!("Metadata database URL is required"));
+    }
+    if raw == "sqlite::memory:" || raw == "jdbc:sqlite::memory:" {
+        return Ok("sqlite::memory:".to_string());
+    }
+    if raw.starts_with("sqlite://") || raw.starts_with("jdbc:sqlite:") || !raw.contains("://") {
+        return normalize_sqlite_metadata_url(raw);
+    }
+    Ok(raw.to_string())
+}
+
+fn normalize_sqlite_metadata_url(raw: &str) -> Result<String> {
+    let path = raw
+        .strip_prefix("sqlite://")
+        .or_else(|| raw.strip_prefix("jdbc:sqlite:"))
+        .unwrap_or(raw);
+    if path == ":memory:" {
+        return Ok("sqlite::memory:".to_string());
+    }
+    Ok(sqlite_url_from_path_with_query(path, "?mode=rwc", None))
 }
 
 fn normalize_db_type(db_type: &str) -> String {
@@ -178,6 +205,35 @@ pub fn sqlite_base_dir_from_url(url: &str) -> Option<PathBuf> {
         .unwrap_or(raw);
     let (path, _) = split_sqlite_path_query(path, "");
     Path::new(path).parent().map(Path::to_path_buf)
+}
+
+fn ensure_sqlite_parent_dir(url: &str) -> Result<()> {
+    let Some(path) = sqlite_path_from_url(url) else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            anyhow!(
+                "failed to create SQLite directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn sqlite_path_from_url(url: &str) -> Option<PathBuf> {
+    let raw = url.trim();
+    if raw == "sqlite::memory:" || raw == "jdbc:sqlite::memory:" {
+        return None;
+    }
+    let path = raw
+        .strip_prefix("sqlite://")
+        .or_else(|| raw.strip_prefix("jdbc:sqlite:"))?;
+    let (path, _) = split_sqlite_path_query(path, "");
+    Some(PathBuf::from(path))
 }
 
 fn normalize_server_url(
@@ -282,6 +338,22 @@ mod tests {
         );
         assert_eq!(
             normalize_url_with_base("sqlite", "jdbc:sqlite::memory:", None, None, None).unwrap(),
+            "sqlite::memory:"
+        );
+    }
+
+    #[test]
+    fn normalizes_metadata_sqlite_urls_for_creation() {
+        assert_eq!(
+            normalize_metadata_url("sqlite:///tmp/dbapi.db").unwrap(),
+            "sqlite:///tmp/dbapi.db?mode=rwc"
+        );
+        assert_eq!(
+            normalize_metadata_url("jdbc:sqlite:/tmp/dbapi.db").unwrap(),
+            "sqlite:///tmp/dbapi.db?mode=rwc"
+        );
+        assert_eq!(
+            normalize_metadata_url("sqlite::memory:").unwrap(),
             "sqlite::memory:"
         );
     }

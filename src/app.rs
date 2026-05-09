@@ -11,14 +11,13 @@ use axum::{
     routing::{any, get, post},
 };
 use include_dir::{Dir, include_dir};
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 use tracing::info;
 
 static STATIC_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/static");
 
 pub async fn serve_http() -> anyhow::Result<()> {
-    let metadata_url =
-        std::env::var("DB_API_METADATA_URL").unwrap_or_else(|_| "sqlite://../data.db".to_string());
+    let metadata_url = metadata_url()?;
     let metadata_db = repository::init_repository(&metadata_url).await?;
     let pool_manager = Arc::new(DbPoolManager::new(db::sqlite_base_dir_from_url(
         &metadata_url,
@@ -29,6 +28,25 @@ pub async fn serve_http() -> anyhow::Result<()> {
     info!("db-api-rs listening on :8520");
     axum::serve(listener, router(state)).await?;
     Ok(())
+}
+
+fn metadata_url() -> anyhow::Result<String> {
+    if let Ok(url) = std::env::var("DB_API_METADATA_URL")
+        && !url.trim().is_empty()
+    {
+        return Ok(url);
+    }
+
+    default_metadata_url()
+}
+
+fn default_metadata_url() -> anyhow::Result<String> {
+    let executable = std::env::current_exe()?;
+    let base_dir = executable
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or(std::env::current_dir()?);
+    Ok(format!("sqlite://{}", base_dir.join("data.db").display()))
 }
 
 pub fn router(state: Arc<handler::AppState>) -> Router {
@@ -209,5 +227,13 @@ mod tests {
             response.headers().get(header::CONTENT_TYPE).unwrap(),
             "text/html; charset=utf-8"
         );
+    }
+
+    #[test]
+    fn default_metadata_url_uses_executable_directory() {
+        let url = default_metadata_url().unwrap();
+
+        assert!(url.starts_with("sqlite://"));
+        assert!(url.ends_with("/data.db"));
     }
 }

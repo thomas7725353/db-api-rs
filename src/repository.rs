@@ -13,12 +13,49 @@ use uuid::Uuid;
 
 pub async fn init_repository(url: &str) -> anyhow::Result<DbConn> {
     let db = db::connect_metadata(url).await?;
-    ensure_standalone_tables(&db).await?;
+    ensure_metadata_tables(&db).await?;
     ensure_api_config_method_column(&db).await?;
+    ensure_default_admin_user(&db).await?;
     Ok(db)
 }
 
-async fn ensure_standalone_tables(db: &DbConn) -> anyhow::Result<()> {
+async fn ensure_metadata_tables(db: &DbConn) -> anyhow::Result<()> {
+    db::execute(
+        db,
+        "create table if not exists user (id integer not null primary key autoincrement, username text unique, password text)",
+        vec![],
+    )
+    .await?;
+    db::execute(
+        db,
+        "create table if not exists datasource (id text not null primary key, name text, note text, type text, url text, username text, password text, driver text, table_sql text, create_time text, update_time text)",
+        vec![],
+    )
+    .await?;
+    db::execute(
+        db,
+        "create table if not exists api_group (id text not null primary key, name text not null unique)",
+        vec![],
+    )
+    .await?;
+    db::execute(
+        db,
+        "create table if not exists api_config (id text not null primary key, path text unique, method text default 'POST', name text, note text, params text, status integer, datasource_id text, previlege integer, group_id text, cache_plugin text, cache_plugin_params text, create_time text, update_time text, content_type text, open_trans integer, json_param text)",
+        vec![],
+    )
+    .await?;
+    db::execute(
+        db,
+        "create table if not exists api_sql (id integer not null primary key autoincrement, api_id text, sql_text text, transform_plugin text, transform_plugin_params text)",
+        vec![],
+    )
+    .await?;
+    db::execute(
+        db,
+        "create table if not exists api_alarm (api_id text, alarm_plugin text, alarm_plugin_param text)",
+        vec![],
+    )
+    .await?;
     db::execute(
         db,
         "create table if not exists access_log (id text primary key, url text, status integer, duration integer, timestamp integer, ip text, app_id text, api_id text, error text)",
@@ -37,6 +74,24 @@ async fn ensure_standalone_tables(db: &DbConn) -> anyhow::Result<()> {
         vec![],
     )
     .await?;
+    db::execute(
+        db,
+        "create table if not exists firewall (status text, mode text)",
+        vec![],
+    )
+    .await?;
+    db::execute(
+        db,
+        "create table if not exists ip_rules (type text, ip text)",
+        vec![],
+    )
+    .await?;
+    db::execute(
+        db,
+        "create table if not exists token (id integer not null primary key autoincrement, token text, note text, expire integer, create_time integer)",
+        vec![],
+    )
+    .await?;
     Ok(())
 }
 
@@ -47,6 +102,16 @@ async fn ensure_api_config_method_column(db: &DbConn) -> anyhow::Result<()> {
         vec![],
     )
     .await;
+    Ok(())
+}
+
+async fn ensure_default_admin_user(db: &DbConn) -> anyhow::Result<()> {
+    db::execute(
+        db,
+        "insert or ignore into user (username, password) values ('admin', 'admin')",
+        vec![],
+    )
+    .await?;
     Ok(())
 }
 
@@ -1016,6 +1081,20 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn init_repository_creates_empty_sqlite_metadata_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("metadata").join("data.db");
+        let db = init_repository(&format!("sqlite://{}", db_path.display()))
+            .await
+            .unwrap();
+
+        assert!(db_path.exists());
+        assert!(select_user(&db, "admin", "admin").await.unwrap().is_some());
+        assert!(select_all_datasources(&db).await.unwrap().is_empty());
+        assert!(select_all_api_configs(&db).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn select_all_api_configs_includes_sql_list() {
         let db = init_repository("sqlite::memory:").await.unwrap();
         create_api_config_test_tables(&db).await;
@@ -1382,7 +1461,7 @@ mod tests {
     async fn create_api_config_test_tables(db: &DbConn) {
         db::execute(
             db,
-            "create table datasource (
+            "create table if not exists datasource (
                 id text primary key,
                 name text,
                 note text,
@@ -1401,7 +1480,7 @@ mod tests {
         .unwrap();
         db::execute(
             db,
-            "create table api_group (
+            "create table if not exists api_group (
                 id text primary key,
                 name text
             )",
@@ -1411,7 +1490,7 @@ mod tests {
         .unwrap();
         db::execute(
             db,
-            "create table api_config (
+            "create table if not exists api_config (
                 id text primary key,
                 path text,
                 method text,
@@ -1436,7 +1515,7 @@ mod tests {
         .unwrap();
         db::execute(
             db,
-            "create table api_sql (
+            "create table if not exists api_sql (
                 id integer primary key autoincrement,
                 api_id text,
                 sql_text text,
@@ -1449,7 +1528,7 @@ mod tests {
         .unwrap();
         db::execute(
             db,
-            "create table api_alarm (
+            "create table if not exists api_alarm (
                 api_id text,
                 alarm_plugin text,
                 alarm_plugin_param text

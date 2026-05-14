@@ -1,0 +1,48 @@
+{
+  "name": "db-api-rs-skills",
+  "version": "0.1.0",
+  "description": "Agent workflows for generating, validating, applying, exporting, importing, and verifying DBAPI configurations.",
+  "mcp": {
+    "serverName": "db-api-rs",
+    "url": "http://127.0.0.1:8521/mcp",
+    "stdioCommand": "db-api-rs mcp --transport stdio --base-url http://127.0.0.1:8520"
+  },
+  "cli": {
+    "binary": "db-api-rs",
+    "inspectCommand": "db-api-rs mcp inspect --json",
+    "callCommand": "db-api-rs mcp --base-url http://127.0.0.1:8520 call <tool> --args-json '{...}'",
+    "qaSmokeCommand": "db-api-rs qa smoke --base-url http://127.0.0.1:8520"
+  },
+  "skills": [
+    {
+      "name": "dbapi-generate-table-apis",
+      "path": "skills/dbapi-generate-table-apis/SKILL.md",
+      "purpose": "Generate reviewable CRUD/list/table/view SQL bundle files from an existing datasource table."
+    },
+    {
+      "name": "dbapi-generate-sql-api",
+      "path": "skills/dbapi-generate-sql-api/SKILL.md",
+      "purpose": "Generate one reviewable API bundle from SQL or View SQL."
+    },
+    {
+      "name": "dbapi-apply-api-bundle",
+      "path": "skills/dbapi-apply-api-bundle/SKILL.md",
+      "purpose": "Validate and apply generated DBAPI bundle files after review."
+    },
+    {
+      "name": "dbapi-token-workflow",
+      "path": "skills/dbapi-token-workflow/SKILL.md",
+      "purpose": "Create an app, authorize a group, generate a token, and prepare authenticated curl calls."
+    },
+    {
+      "name": "dbapi-export-import-workflow",
+      "path": "skills/dbapi-export-import-workflow/SKILL.md",
+      "purpose": "Export and import API configs and groups through DBAPI management endpoints."
+    },
+    {
+      "name": "dbapi-demo-crud",
+      "path": "skills/dbapi-demo-crud/SKILL.md",
+      "purpose": "Seed and verify the historical local demo CRUD API set."
+    }
+  ]
+}

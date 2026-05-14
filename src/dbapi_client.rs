@@ -1,8 +1,10 @@
 use crate::model::{ApiConfig, ApiGroup, AppInfo, DataSource};
 use crate::schema::{ColumnInfo, TableSchema};
 use anyhow::{Context, anyhow};
+use reqwest::Method;
 use reqwest::multipart;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::Path;
 
@@ -10,6 +12,26 @@ use std::path::Path;
 pub struct DbapiClient {
     base_url: String,
     http: reqwest::Client,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishedApiCall {
+    pub method: String,
+    pub path: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
+    #[serde(default)]
+    pub authorization: Option<String>,
+    #[serde(default)]
+    pub headers: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishedApiResponse {
+    pub status: u16,
+    pub body: serde_json::Value,
 }
 
 impl DbapiClient {
@@ -38,6 +60,33 @@ impl DbapiClient {
 
     pub async fn list_api_configs(&self) -> anyhow::Result<Vec<ApiConfig>> {
         self.get_json("/apiConfig/getAll").await
+    }
+
+    pub async fn health_check(&self) -> anyhow::Result<serde_json::Value> {
+        let response = self
+            .http
+            .get(self.url("/health"))
+            .send()
+            .await
+            .context("failed to send GET request to /health")?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .with_context(|| format!("failed to read response body from /health ({status})"))?;
+        Ok(json!({
+            "status": status.as_u16(),
+            "ok": status.is_success(),
+            "body": body
+        }))
+    }
+
+    pub async fn list_tables(&self, datasource_id: &str) -> anyhow::Result<Vec<String>> {
+        self.post_json(
+            "/table/getAllTables",
+            &json!({"datasourceId": datasource_id}),
+        )
+        .await
     }
 
     pub async fn inspect_table_schema(
@@ -95,6 +144,53 @@ impl DbapiClient {
             .await
     }
 
+    pub async fn call_published_api(
+        &self,
+        call: PublishedApiCall,
+    ) -> anyhow::Result<PublishedApiResponse> {
+        let method = call
+            .method
+            .parse::<Method>()
+            .with_context(|| format!("invalid HTTP method: {}", call.method))?;
+        let path = normalize_published_api_path(&call.path)?;
+        let url = self.url(&format!("/api/{path}"));
+        let params = call.params;
+        let mut request = self.http.request(method.clone(), url);
+
+        for (name, value) in call.headers {
+            if name.eq_ignore_ascii_case("authorization") {
+                continue;
+            }
+            request = request.header(name, value);
+        }
+        if let Some(token) = call.authorization.filter(|token| !token.trim().is_empty()) {
+            request = request.header("Authorization", token);
+        }
+
+        if method == Method::GET || method == Method::DELETE {
+            if !params.is_null() {
+                request = request.query(&params);
+            }
+        } else if !params.is_null() {
+            request = request.form(&params);
+        }
+
+        let response = request
+            .send()
+            .await
+            .with_context(|| format!("failed to call published API /api/{path}"))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .with_context(|| format!("failed to read published API response from /api/{path}"))?;
+        let body = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "text": text }));
+        Ok(PublishedApiResponse {
+            status: status.as_u16(),
+            body,
+        })
+    }
+
     async fn post_json<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -141,6 +237,15 @@ impl DbapiClient {
         let _: serde_json::Value = parse_response(path, response).await?;
         Ok(())
     }
+}
+
+fn normalize_published_api_path(path: &str) -> anyhow::Result<String> {
+    let trimmed = path.trim().trim_start_matches('/');
+    let normalized = trimmed.strip_prefix("api/").unwrap_or(trimmed);
+    if normalized.is_empty() || normalized.contains("://") {
+        anyhow::bail!("published API path must be a relative /api path");
+    }
+    Ok(normalized.to_string())
 }
 
 async fn parse_response<T: DeserializeOwned>(
@@ -195,5 +300,18 @@ mod tests {
     #[test]
     fn rejects_empty_base_url() {
         assert!(DbapiClient::new("  ").is_err());
+    }
+
+    #[test]
+    fn normalizes_published_api_path() {
+        assert_eq!(
+            normalize_published_api_path("/api/demo/items/qb-list").unwrap(),
+            "demo/items/qb-list"
+        );
+        assert_eq!(
+            normalize_published_api_path("demo/items/qb-list").unwrap(),
+            "demo/items/qb-list"
+        );
+        assert!(normalize_published_api_path("https://example.test/api").is_err());
     }
 }

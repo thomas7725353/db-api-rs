@@ -172,21 +172,81 @@ Docker Compose also starts an MCP HTTP sidecar:
 http://127.0.0.1:8521/mcp
 ```
 
+Desktop MCP clients can also launch stdio transport:
+
+```bash
+cargo run -- mcp --transport stdio --base-url http://127.0.0.1:8520
+```
+
+Inspect the MCP surface from the CLI:
+
+```bash
+cargo run -- mcp inspect --json
+```
+
+Call a tool locally through the same DBAPI client path used by the MCP sidecar:
+
+```bash
+cargo run -- mcp --base-url http://127.0.0.1:8520 call health_check
+cargo run -- mcp --base-url http://127.0.0.1:8520 call list_tables --args-json '{"datasourceId":"postgres_demo"}'
+```
+
+Run a QA smoke check:
+
+```bash
+cargo run -- qa smoke --base-url http://127.0.0.1:8520
+cargo run -- qa smoke --base-url http://127.0.0.1:8520 --path demo/items/qb-list --params-json '{"limit":20,"offset":0}'
+```
+
 MCP tools:
 
+- `health_check`
 - `list_datasources`
+- `list_groups`
+- `list_api_configs`
+- `list_tables`
 - `inspect_table_schema`
 - `draft_table_crud_bundle`
 - `draft_sql_api_bundle`
+- `create_app_token_for_group`
+- `call_published_api`
 - `validate_api_bundle`
 - `apply_api_config_bundle`
 
-By default, the sidecar only supports read, draft, and validation workflows. Writes require starting the service with `--allow-write` and passing `allowWrite=true` when calling the apply tool.
+MCP resources:
+
+- `dbapi://docs/quickstart`
+- `dbapi://docs/bundle-workflow`
+- `dbapi://api-catalog`
+- `dbapi://datasources`
+- `dbapi://skills`
+
+MCP prompts:
+
+- `generate_table_api_bundle`
+- `generate_sql_api_bundle`
+- `review_bundle_before_apply`
+- `qa_smoke_test_plan`
+
+By default, the sidecar only supports read, draft, and validation workflows. Write-capable tools require starting the service with `--allow-write` and passing `allowWrite=true`. `call_published_api` can run GET smoke tests without write access; non-GET calls require the write gates.
+
+Example MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "db-api-rs": {
+      "url": "http://127.0.0.1:8521/mcp"
+    }
+  }
+}
+```
 
 ## Agent Skills
 
 The repository includes repo-local skills for Codex, Claude, Cursor, and other agents to reuse stable workflows:
 
+- `skills/index.json`
 - `skills/dbapi-generate-table-apis`
 - `skills/dbapi-generate-sql-api`
 - `skills/dbapi-apply-api-bundle`

@@ -34,6 +34,8 @@ Local coding agents should read this README first and use the repo-local skills 
 
 MCP-capable agents can connect to the sidecar at `http://127.0.0.1:8521/mcp`.
 
+The MCP and CLI surfaces are intentionally aligned: use CLI for humans and CI, use MCP for agents, and use `skills/` as workflow recipes that explain how to combine the tools safely.
+
 When generating table APIs, always use the provided `resource_path` exactly. Do not guess paths from table names. If API creation, import/export, token handling, bundle generation, or apply behavior changes, update the repo-local skills in the same change so agents keep using the current workflow.
 
 ## View SQL Templates
@@ -246,18 +248,79 @@ Docker Compose starts an MCP HTTP sidecar at `http://127.0.0.1:8521/mcp`:
 docker compose up -d --build
 ```
 
-The sidecar defaults to read/draft/validate mode. Writes require both starting the process with `--allow-write` and passing tool request `allowWrite=true`.
+Desktop MCP clients can also launch stdio transport:
+
+```bash
+cargo run -- mcp --transport stdio --base-url http://127.0.0.1:8520
+```
+
+The sidecar defaults to read/draft/validate mode. Write-capable tools require both starting the process with `--allow-write` and passing tool request `allowWrite=true`. `call_published_api` can run GET smoke tests without write access; non-GET calls require the write gates.
+
+Inspect the public MCP surface without starting a client:
+
+```bash
+cargo run -- mcp inspect --json
+```
+
+Call a tool locally through the same DBAPI client path used by the MCP sidecar:
+
+```bash
+cargo run -- mcp --base-url http://127.0.0.1:8520 call health_check
+cargo run -- mcp --base-url http://127.0.0.1:8520 call list_tables --args-json '{"datasourceId":"postgres_demo"}'
+```
+
+Run a QA smoke check:
+
+```bash
+cargo run -- qa smoke --base-url http://127.0.0.1:8520
+cargo run -- qa smoke --base-url http://127.0.0.1:8520 --path demo/items/qb-list --params-json '{"limit":20,"offset":0}'
+```
 
 Available tools:
 
+- `health_check`
 - `list_datasources`
+- `list_groups`
+- `list_api_configs`
+- `list_tables`
 - `inspect_table_schema`
 - `draft_table_crud_bundle`
 - `draft_sql_api_bundle`
+- `create_app_token_for_group`
+- `call_published_api`
 - `validate_api_bundle`
 - `apply_api_config_bundle`
 
+Available resources:
+
+- `dbapi://docs/quickstart`
+- `dbapi://docs/bundle-workflow`
+- `dbapi://api-catalog`
+- `dbapi://datasources`
+- `dbapi://skills`
+
+Available prompts:
+
+- `generate_table_api_bundle`
+- `generate_sql_api_bundle`
+- `review_bundle_before_apply`
+- `qa_smoke_test_plan`
+
 The sidecar calls the existing HTTP management routes on the main DBAPI service. It does not directly read or write `data.db`.
+
+Example MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "db-api-rs": {
+      "url": "http://127.0.0.1:8521/mcp"
+    }
+  }
+}
+```
+
+The repo-local skill catalog is available at `skills/index.json`. Skills are workflow documentation, not a separate runtime; the CLI and MCP server are the executable surfaces.
 
 ## Repository
 

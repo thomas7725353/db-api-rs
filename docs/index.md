@@ -242,6 +242,68 @@ Example MCP client config:
 }
 ```
 
+## Agent-First Testing (No UI)
+
+Use this section when testing with an agent, MCP client, or CI tasks.
+
+1. Discover the MCP surface:
+
+```bash
+db-api-rs mcp inspect --json
+```
+
+2. Verify runtime health and core read APIs:
+
+```bash
+db-api-rs mcp --base-url http://127.0.0.1:8520 call health_check
+db-api-rs mcp --base-url http://127.0.0.1:8520 call list_datasources
+db-api-rs mcp --base-url http://127.0.0.1:8520 call list_groups
+db-api-rs mcp --base-url http://127.0.0.1:8520 call list_api_configs
+```
+
+3. Run endpoint smoke checks with CLI:
+
+```bash
+db-api-rs qa smoke --base-url http://127.0.0.1:8520
+db-api-rs qa smoke --base-url http://127.0.0.1:8520 --path demo/items/qb-list --params-json '{"limit":20,"offset":0}'
+```
+
+4. For private API paths, expect a token error before token exists:
+
+```bash
+db-api-rs qa smoke --base-url http://127.0.0.1:8520 --path demo/items/create --method POST --params-json '{"name":"test-item","status":"active","note":"agent test"}'
+```
+
+`No Token!` for private paths is a valid negative-security assertion.
+
+5. Write-capable MCP tools and non-GET published API calls require two gates:
+
+- start MCP with `--allow-write`
+- pass `allowWrite: true` in the tool arguments
+
+Example:
+
+```bash
+db-api-rs mcp --transport http --listen 127.0.0.1:8521 --base-url http://127.0.0.1:8520 --allow-write
+```
+
+Then call:
+
+```bash
+db-api-rs mcp --base-url http://127.0.0.1:8520 call create_app_token_for_group --args-json '{"allowWrite":true,"appName":"agent-smoke","groupId":"demo_crud_group"}'
+db-api-rs mcp --base-url http://127.0.0.1:8520 call call_published_api --args-json '{"allowWrite":true,"method":"POST","path":"demo/items/create","params":{"name":"agent created","status":"active","note":"agent test"}}'
+```
+
+Repo-local agent skills are already aligned to this flow:
+
+- `skills/dbapi-generate-table-apis`
+- `skills/dbapi-generate-sql-api`
+- `skills/dbapi-apply-api-bundle`
+- `skills/dbapi-token-workflow`
+- `skills/dbapi-export-import-workflow`
+
+Use these skills to generate reviewable bundles, validate, and only apply after confirmation.
+
 ## Agent Skills
 
 The repository includes repo-local skills for Codex, Claude, Cursor, and other agents to reuse stable workflows:

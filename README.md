@@ -248,6 +248,18 @@ Docker Compose starts an MCP HTTP sidecar at `http://127.0.0.1:8521/mcp`:
 docker compose up -d --build
 ```
 
+For local binary debugging, if you want demo datasources (`local_sqlite_demo`, `mysql_demo`, `postgres_demo`) returned by `list_datasources`, start `serve` with the seeded DB explicitly:
+
+```bash
+DB_API_METADATA_URL=sqlite://$(pwd)/data.db /Users/andy/Target/debug/db-api-rs serve
+```
+
+Then in another terminal:
+
+```bash
+/Users/andy/Target/debug/db-api-rs mcp --transport http --listen 127.0.0.1:8521 --base-url http://127.0.0.1:8520
+```
+
 Desktop MCP clients can also launch stdio transport:
 
 ```bash

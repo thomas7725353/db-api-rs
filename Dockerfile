@@ -11,6 +11,9 @@ FROM rust:1-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY README.md ./
+COPY docs/index.md ./docs/index.md
+COPY skills/index.json ./skills/index.json
 COPY --from=frontend /app/static ./static
 RUN cargo build --release
 

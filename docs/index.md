@@ -242,6 +242,165 @@ Example MCP client config:
 }
 ```
 
+## ASCII Architecture
+
+```text
+=====================================================================
+                Bundle Workflow (File-first + Review Gate)
+=====================================================================
+
+                     +-----------------------------+
+                     |            Agent/CLI         |
+                     |  - agent prompt              |
+                     |  - skill execution           |
+                     +--------------+--------------+
+                                    |
+                                    | 1. Generate bundle files
+                                    v
+                 +------------------+------------------+
+                 |            db-api-rs CLI            |
+                 | bundle draft-table / draft-sql       |
+                 +------------------+------------------+
+                                    |
+                                    | 2. Produce review artifacts
+                                    v
+                 +---------------------------------------+
+                 | Target bundle directory                |
+                 |  dbapi_manifest.json                  |
+                 |  api_group_config.json                |
+                 |  api_config.json                      |
+                 |  curl.md                              |
+                 |  VERIFY.md                            |
+                 +------------------+--------------------+
+                                    |
+                                    | 3. Human review
+                                    v
+                 +---------------------+-------------------+
+                 | db-api-rs CLI (or MCP tool) validate     |
+                 |  cargo run -- bundle validate            |
+                 |  OR                                     |
+                 |  mcp call validate_api_bundle             |
+                 +---------------------+-------------------+
+                                    |
+                                    | 4. Write gate
+                                    |    --allow-write
+                                    v
+                 +------------------------+---------------+
+                 |        db-api-rs CLI/MCP apply         |
+                 | apply_api_config_bundle                |
+                 +------------------------+---------------+
+                                          |
+                                          | 5. Write to runtime metadata DB
+                                          v
+                              +----------------------------+
+                              |    db-api-rs Runtime 8520   |
+                              |    /apiConfig/importGroup   |
+                              |    /apiConfig/import        |
+                              +-------------+--------------+
+                                            |
+                                            v
+                              +----------------------------+
+                              |      SQLite metadata DB      |
+                              |         (data.db)           |
+                              +-------------+--------------+
+                                            |
+                                            | 6. Expose APIs
+                                            v
+                               +---------------------------+
+                               |  /api/{path} endpoints    |
+                               +-------------+-------------+
+                                             |
+                                             v
+                               +---------------------------+
+                               | Business data sources      |
+                               | sqlite / mysql / postgres  |
+                               +---------------------------+
+```
+
+```text
+========================================================
+                    MCP + Agent Runtime Flow
+========================================================
+
+ +--------------------------+           HTTP/stdio           +--------------------------+
+ |        Agent / Cursor    | <----------------------------> |   db-api-rs MCP Server    |
+ |  - mcp client / tools    |      /mcp                      |   (8521)                 |
+ |  - no UI required        |                               |                          |
+ +------------+-------------+                               +------------+-------------+
+              |                                                           |
+              | call tool: health_check/list_*                             |
+              +----------------------------------------------------------->|
+              |                                                           |
+              |                     MCP response                            |
+              +<-----------------------------------------------------------+
+              |                                                           |
+              | call tool: draft/validate/apply/get call_published_api     |
+              +----------------------------------------------------------->|
+              |                                                           |
+              v                                                           v
+   +----------------------+                                   +----------------------+
+   | CLI-equivalent APIs |                                   | Internal DBAPI Client |
+   | (same runtime path) |                                   |  against :8520       |
+   +---------+------------+                                   +----------+-----------+
+             |                                                           |
+             +------------------------------+----------------------------+
+                                            |
+                                            v
+                                    +-------+-----------------+
+                                    |   db-api-rs Runtime 8520 |
+                                    |   /health, /apiConfig/*  |
+                                    |   /api/{path}            |
+                                    +-----------+--------------+
+                                                |
+                                                v
+                                         +------+------+
+                                         | Access Log + |
+                                         | Metadata DB |
+                                         +------+------+
+                                                |
+                                                v
+                                   +------------+------------+
+                                   |   Target datasource(s)   |
+                                   |  sqlite/mysql/postgres   |
+                                   +-------------------------+
+```
+
+```text
+=====================================================
+              Agent-First Testing (No UI) Pipeline
+=====================================================
+
+Agent Test Runner
+        |
+        | 1) inspect tools + resources + prompts
+        v
+db-api-rs mcp inspect --json
+        |
+        | 2) health + discovery
+        v
+health_check -> list_datasources -> list_groups -> list_api_configs
+        |
+        | 3) read checks
+        v
+list_tables / inspect_table_schema
+        |
+        | 4) smoke check
+        v
+qa smoke (GET path) / call_published_api (GET)
+        |
+        | 5) security check
+        v
+POST without token -> expect 401 + "No Token!"
+        |
+        | 6) write checks (gated)
+        v
+MCP --allow-write + allowWrite=true
+apply only after explicit approve
+        |
+        v
+Validation passed and endpoints executed by QA
+```
+
 ## Agent-First Testing (No UI)
 
 Use this section when testing with an agent, MCP client, or CI tasks.
